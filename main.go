@@ -24,9 +24,14 @@ type processStats struct {
 }
 
 type metaConfig struct {
-	Type                 string
-	MapJobNameToProperty string
-	EndOfLogDelim        string
+	Type                         string
+	MapJobNameToProperty         string
+	StdEndOfLogDelim             string
+	NginxAccessLogsFileName      string
+	NginxErrorLogsFileName       string
+	ApplicationLogsFileName      string
+	ApplicationLogsEndOfLogDelim string
+	ApplicationLogsType          string
 }
 
 var initialized bool
@@ -39,7 +44,7 @@ const StdErr string = "stderr"
 
 func main() {
 	var nomadAddr, nomadClientID, consulAddr, logzToken, logzAddr, consulPath string
-	var verbose bool
+	var verbose, randomisedRestart bool
 	var maxAge int
 
 	args := os.Args[1:]
@@ -53,6 +58,7 @@ func main() {
 	flags.BoolVar(&verbose, "verbose", false, "Enable verbose logging.")
 	flags.IntVar(&maxAge, "max-age", 7, "Set the maximum age in days for allocation log state to be stored in consul for.")
 	flags.StringVar(&consulPath, "consul-path", "logzio-nomad", "The KV path in consul to store allocation log state.")
+	flags.BoolVar(&randomisedRestart, "random-restart", false, "Should the streaming of logs be restarted at random intervals. (Mostly for testing.)")
 
 	flags.Parse(args)
 
@@ -130,6 +136,7 @@ Loop:
 					cancelChannels := []chan bool{}
 					channels := map[string]chan bool{}
 
+				GroupListLoop:
 					for _, group := range allocation.Job.TaskGroups {
 						if *group.Name == allocation.TaskGroup {
 							for _, t := range group.Tasks {
@@ -142,9 +149,12 @@ Loop:
 								channels[t.Name+"_stderr"] = cancelStderr
 								channels[t.Name+"_stdout"] = cancelStdout
 							}
+
+							break GroupListLoop
 						}
 					}
 
+				GroupShipLoop:
 					for _, group := range allocation.Job.TaskGroups {
 						if *group.Name == allocation.TaskGroup {
 							for _, task := range group.Tasks {
@@ -158,16 +168,20 @@ Loop:
 								go shipLogs(StdErr, conf, &wg, allocation, task.Name, kv, client, consulPath, stopStdout, stopStderr, cancelChannels, channels[task.Name+"_stderr"], l)
 								go shipLogs(StdOut, conf, &wg, allocation, task.Name, kv, client, consulPath, stopStderr, stopStdout, cancelChannels, channels[task.Name+"_stdout"], l)
 							}
+
+							break GroupShipLoop
 						}
 					}
 
-					go randomRestart(allocation.ID, cancelChannels)
+					if randomisedRestart {
+						go randomRestart(allocation.ID, cancelChannels)
+					}
 
 					log.Debug(fmt.Sprintf("Waiting on WaitGroup for alloc: %s", allocation.ID))
 
 					wg.Wait()
 
-					log.Warn(fmt.Sprintf("Finished collection for alloc (possible restart): %s", allocation.ID))
+					log.Warn(fmt.Sprintf("Finished collection for alloc: %s", allocation.ID))
 				}(allocation)
 			}
 		}
@@ -207,18 +221,6 @@ func syncAllocations(client *nomad.Client, nodeID string, allocationJobs chan<- 
 func shipLogs(logType string, conf metaConfig, wg *sync.WaitGroup, allocation *nomad.Allocation, taskName string, kv *consul.KV, client *nomad.Client, consulPath string, listenChan chan struct{}, stopChan chan struct{}, cancelChannels []chan bool, cancel chan bool, l *logzio.LogzioSender) {
 	defer wg.Done()
 
-	itemType := "nomad_" + logType
-
-	if len(conf.Type) > 0 {
-		itemType = conf.Type
-	}
-
-	delim := "\n"
-
-	if len(conf.EndOfLogDelim) > 0 {
-		delim = conf.EndOfLogDelim
-	}
-
 	log.Info(fmt.Sprintf("Shipping Logs: %s %s %s", allocation.ID, taskName, logType))
 
 	bytePostionIdentifier := fmt.Sprintf("%s:%s:%s", allocation.ID, taskName, logType)
@@ -249,7 +251,45 @@ func shipLogs(logType string, conf metaConfig, wg *sync.WaitGroup, allocation *n
 		offsetBytes = int64(0)
 	}
 
-	stream, errors := client.AllocFS().Logs(allocation, true, taskName, logType, "start", offsetBytes, listenChan, nil)
+	var stream <-chan *nomad.StreamFrame
+	var errors <-chan error
+	var itemType, delim string
+
+	switch logType {
+	case "stderr":
+		fallthrough
+	case "stdout":
+		stream, errors = client.AllocFS().Logs(allocation, true, taskName, logType, "start", offsetBytes, listenChan, nil)
+
+		itemType = "nomad-" + logType
+
+		if len(conf.Type) > 0 {
+			itemType = conf.Type
+		}
+
+		delim = "\n"
+
+		if len(conf.StdEndOfLogDelim) > 0 {
+			delim = conf.StdEndOfLogDelim
+		}
+	case "nginx_access":
+		stream, errors = client.AllocFS().Stream(allocation, conf.NginxAccessLogsFileName, "start", offsetBytes, listenChan, nil)
+		itemType = "nginx"
+		delim = "\n"
+	case "nginx_error":
+		stream, errors = client.AllocFS().Stream(allocation, conf.NginxErrorLogsFileName, "start", offsetBytes, listenChan, nil)
+		itemType = "nginx-error"
+		delim = "["
+	case "application":
+		stream, errors = client.AllocFS().Stream(allocation, conf.ApplicationLogsFileName, "start", offsetBytes, listenChan, nil)
+		itemType = "nomad-application"
+
+		if len(conf.ApplicationLogsType) > 0 {
+			itemType = conf.ApplicationLogsType
+		}
+	default:
+		log.Panic("Invalid log type provided.")
+	}
 
 	bytesRead := offsetBytes
 
@@ -390,8 +430,28 @@ func buildMetaConfig(meta map[string]string) metaConfig {
 		config.MapJobNameToProperty = value
 	}
 
-	if value, ok := meta["logzio_end_of_log_delim"]; ok {
-		config.EndOfLogDelim = value
+	if value, ok := meta["logzio_srderr_end_of_log_delim"]; ok {
+		config.StdEndOfLogDelim = value
+	}
+
+	if value, ok := meta["logzio_nginx_access_logs"]; ok {
+		config.NginxAccessLogsFileName = value
+	}
+
+	if value, ok := meta["logzio_nginx_error_logs"]; ok {
+		config.NginxErrorLogsFileName = value
+	}
+
+	if value, ok := meta["logzio_application_logs"]; ok {
+		config.ApplicationLogsFileName = value
+	}
+
+	if value, ok := meta["logzio_application_end_of_log_delim"]; ok {
+		config.ApplicationLogsEndOfLogDelim = value
+	}
+
+	if value, ok := meta["logzio_applocation_type"]; ok {
+		config.ApplicationLogsType = value
 	}
 
 	return config
@@ -402,7 +462,7 @@ func randomRestart(allocationID string, cancelChannels []chan bool) {
 	nextTime = nextTime.Add(time.Second * 30)
 	time.Sleep(time.Until(nextTime))
 
-	chance := RandomWeightSelect(1, 50)
+	chance := RandomWeightSelect(1, 100)
 
 	if chance {
 		log.Warn(fmt.Sprintf("Cancelling alloc: %s", allocationID))
