@@ -27,15 +27,13 @@ type processStats struct {
 }
 
 type metaConfig struct {
-	Type                         string
-	MapJobNameToProperty         string
-	StdEndOfLogDelim             string
-	NginxAccessLogsFileName      string
-	NginxErrorLogsFileName       string
-	ApplicationLogsFileName      string
-	ApplicationLogsEndOfLogDelim string
-	ApplicationLogsType          string
-	LogFiles                     []logFileConfig
+	MapJobNameToProperty string
+	LogFiles             []logFileConfig
+}
+
+type taskMetaConfig struct {
+	Type  string
+	Delim string
 }
 
 type logFileConfig struct {
@@ -74,6 +72,18 @@ func main() {
 	flags.Parse(args)
 
 	args = flags.Args()
+
+	if envToken := os.Getenv("LOGZIO_TOKEN"); logzToken == "" && envToken != "" {
+		logzToken = envToken
+	} else if logzToken == "" {
+		log.Fatal("No logzio token provided as an argument or in the LOGZIO_TOKEN env variable.")
+	}
+
+	if envNomadClientID := os.Getenv("NOMAD_CLIENT_ID"); nomadClientID == "" && envNomadClientID != "" {
+		nomadClientID = envNomadClientID
+	} else if nomadClientID == "" {
+		log.Fatal("No nomad client/node id provided as an argument or in the NOMAD_CLIENT_ID env variable.")
+	}
 
 	if verbose {
 		log.SetLevel(log.DebugLevel)
@@ -170,24 +180,6 @@ Loop:
 
 					conf := buildMetaConfig(allocGroup.Meta)
 
-					if len(conf.NginxAccessLogsFileName) > 0 {
-						cancelNginxAccess := make(chan bool)
-						cancelChannels = append(cancelChannels, cancelNginxAccess)
-						channels["nginx-access"] = cancelNginxAccess
-					}
-
-					if len(conf.NginxErrorLogsFileName) > 0 {
-						cancelNginxError := make(chan bool)
-						cancelChannels = append(cancelChannels, cancelNginxError)
-						channels["nginx-error"] = cancelNginxError
-					}
-
-					if len(conf.ApplicationLogsFileName) > 0 {
-						cancelApp := make(chan bool)
-						cancelChannels = append(cancelChannels, cancelApp)
-						channels["application"] = cancelApp
-					}
-
 					for i := range conf.LogFiles {
 						c := make(chan bool)
 						cancelChannels = append(cancelChannels, c)
@@ -203,40 +195,21 @@ Loop:
 								stopStderr := make(chan struct{})
 								stopStdout := make(chan struct{})
 
-								go shipLogs(StdErr, conf, &wg, allocation, task.Name, kv, client, consulPath, stopStderr, filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]), channels[task.Name+"_stderr"], l, nil)
-								go shipLogs(StdOut, conf, &wg, allocation, task.Name, kv, client, consulPath, stopStdout, filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]), channels[task.Name+"_stdout"], l, nil)
+								taskConfig := buildTaskMetaConfig(task.Meta)
+
+								go shipLogs(StdErr, conf, &taskConfig, &wg, allocation, task.Name, kv, client, consulPath, stopStderr, filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]), channels[task.Name+"_stderr"], l, nil)
+								go shipLogs(StdOut, conf, &taskConfig, &wg, allocation, task.Name, kv, client, consulPath, stopStdout, filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]), channels[task.Name+"_stdout"], l, nil)
 							}
 
 							break GroupShipLoop
 						}
 					}
 
-					if len(conf.NginxAccessLogsFileName) > 0 {
-						wg.Add(1)
-						stopNginxAccess := make(chan struct{})
-						c := channels["nginx-access"]
-						go shipLogs("nginx-access", conf, &wg, allocation, "leader", kv, client, consulPath, stopNginxAccess, filterCancelChannels(cancelChannels, c), c, l, nil)
-					}
-
-					if len(conf.NginxErrorLogsFileName) > 0 {
-						wg.Add(1)
-						stopNginxError := make(chan struct{})
-						c := channels["nginx-error"]
-						go shipLogs("nginx-error", conf, &wg, allocation, "leader", kv, client, consulPath, stopNginxError, filterCancelChannels(cancelChannels, c), c, l, nil)
-					}
-
-					if len(conf.ApplicationLogsFileName) > 0 {
-						wg.Add(1)
-						stopNginxError := make(chan struct{})
-						c := channels["application"]
-						go shipLogs("application", conf, &wg, allocation, "leader", kv, client, consulPath, stopNginxError, filterCancelChannels(cancelChannels, c), c, l, nil)
-					}
-
-					for i, file := range conf.LogFiles {
+					for i := range conf.LogFiles {
 						wg.Add(1)
 						stop := make(chan struct{})
 						c := channels["file_"+strconv.Itoa(i)]
-						go shipLogs("file", conf, &wg, allocation, "leader", kv, client, consulPath, stop, filterCancelChannels(cancelChannels, c), c, l, &file)
+						go shipLogs("file", conf, nil, &wg, allocation, "leader", kv, client, consulPath, stop, filterCancelChannels(cancelChannels, c), c, l, &conf.LogFiles[i])
 					}
 
 					if randomisedRestart {
@@ -286,7 +259,7 @@ func syncAllocations(client *nomad.Client, nodeID string, allocationJobs chan<- 
 	syncAllocations(client, nodeID, allocationJobs)
 }
 
-func shipLogs(logType string, conf metaConfig, wg *sync.WaitGroup, allocation *nomad.Allocation, taskName string, kv *consul.KV, client *nomad.Client, consulPath string, stopChan chan struct{}, cancelChannels []chan bool, cancel chan bool, l *logzio.LogzioSender, logFile *logFileConfig) {
+func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *sync.WaitGroup, allocation *nomad.Allocation, taskName string, kv *consul.KV, client *nomad.Client, consulPath string, stopChan chan struct{}, cancelChannels []chan bool, cancel chan bool, l *logzio.LogzioSender, logFile *logFileConfig) {
 	defer wg.Done()
 
 	allocation, _, err := client.Allocations().Info(allocation.ID, nil)
@@ -307,7 +280,11 @@ func shipLogs(logType string, conf metaConfig, wg *sync.WaitGroup, allocation *n
 		return
 	}
 
-	log.Info(fmt.Sprintf("Shipping Logs: %s %s %s", allocation.ID, taskName, logType))
+	if logFile != nil {
+		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s %s", allocation.ID, taskName, logType, logFile.Path))
+	} else {
+		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s", allocation.ID, taskName, logType))
+	}
 
 	var bytePostionIdentifier string
 
@@ -373,14 +350,14 @@ func shipLogs(logType string, conf metaConfig, wg *sync.WaitGroup, allocation *n
 
 		itemType = "nomad-" + logType
 
-		if len(conf.Type) > 0 {
-			itemType = conf.Type
+		if taskConf != nil && len(taskConf.Type) > 0 {
+			itemType = taskConf.Type
 		}
 
 		delim = "\n"
 
-		if len(conf.StdEndOfLogDelim) > 0 {
-			delim = conf.StdEndOfLogDelim
+		if taskConf != nil && len(taskConf.Delim) > 0 {
+			delim = taskConf.Delim
 		}
 	case "file":
 		if logFile == nil {
@@ -435,156 +412,19 @@ func shipLogs(logType string, conf metaConfig, wg *sync.WaitGroup, allocation *n
 		}
 
 		stream, errors = client.AllocFS().Stream(allocation, logFile.Path, "start", offsetBytes, stopChan, nil)
+
+		if len(logFile.Type) == 0 {
+			log.Error("Log file type must be set.")
+			for _, c := range cancelChannels {
+				c <- true
+			}
+			return
+		}
+
 		itemType = logFile.Type
-		delim = logFile.Delim
-	case "nginx-access":
-		data, _, err := client.AllocFS().Stat(allocation, conf.NginxAccessLogsFileName, nil)
 
-	NginxAccessFileExistanceLoop:
-		for err != nil {
-			if strings.Contains(err.Error(), "no such file or directory") {
-				log.Warning("Unable to find file, retrying in 5s: ", err)
-				allocation, _, allocErr := client.Allocations().Info(allocation.ID, nil)
-
-				if allocErr != nil {
-					log.Error("Unable to find alloc: ", allocErr)
-					break NginxAccessFileExistanceLoop
-				}
-
-				if allocation.ClientStatus != "running" {
-					log.Warning(fmt.Sprintf("Allocation is stopped: %s", allocation.ID))
-					break NginxAccessFileExistanceLoop
-				}
-
-				time.Sleep(time.Second * 5)
-				select {
-				case <-cancel:
-					log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", allocation.ID, taskName, logType))
-					break NginxAccessFileExistanceLoop
-				default:
-					data, _, err = client.AllocFS().Stat(allocation, conf.NginxAccessLogsFileName, nil)
-				}
-			} else {
-				break NginxAccessFileExistanceLoop
-			}
-		}
-
-		if err != nil {
-			log.Error("Error calculating nginx access file size: ", err)
-			for _, c := range cancelChannels {
-				c <- true
-			}
-			return
-		}
-
-		if data.Size < offsetBytes {
-			offsetBytes = 0
-		}
-
-		stream, errors = client.AllocFS().Stream(allocation, conf.NginxAccessLogsFileName, "start", offsetBytes, stopChan, nil)
-		itemType = "nginx"
-	case "nginx-error":
-		data, _, err := client.AllocFS().Stat(allocation, conf.NginxErrorLogsFileName, nil)
-
-	NginxErrorFileExistanceLoop:
-		for err != nil {
-			if strings.Contains(err.Error(), "no such file or directory") {
-				log.Warning("Unable to find file, retrying in 5s: ", err)
-				allocation, _, allocErr := client.Allocations().Info(allocation.ID, nil)
-
-				if allocErr != nil {
-					log.Error("Unable to find alloc: ", allocErr)
-					break NginxErrorFileExistanceLoop
-				}
-
-				if allocation.ClientStatus != "running" {
-					log.Warning(fmt.Sprintf("Allocation is stopped: %s", allocation.ID))
-					break NginxErrorFileExistanceLoop
-				}
-
-				time.Sleep(time.Second * 5)
-				select {
-				case <-cancel:
-					log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", allocation.ID, taskName, logType))
-					break NginxErrorFileExistanceLoop
-				default:
-					data, _, err = client.AllocFS().Stat(allocation, conf.NginxErrorLogsFileName, nil)
-				}
-			} else {
-				break NginxErrorFileExistanceLoop
-			}
-		}
-
-		if err != nil {
-			log.Error("Error calculating nginx error file size: ", err)
-			for _, c := range cancelChannels {
-				c <- true
-			}
-			return
-		}
-
-		if data.Size < offsetBytes {
-			offsetBytes = 0
-		}
-
-		stream, errors = client.AllocFS().Stream(allocation, conf.NginxErrorLogsFileName, "start", offsetBytes, stopChan, nil)
-		itemType = "nginx-error"
-		delim = `(|m)^\[`
-	case "application":
-		data, _, err := client.AllocFS().Stat(allocation, conf.ApplicationLogsFileName, nil)
-
-	AppFileExistanceLoop:
-		for err != nil {
-			if strings.Contains(err.Error(), "no such file or directory") {
-				log.Warning("Unable to find file, retrying in 5s: ", err)
-				allocation, _, allocErr := client.Allocations().Info(allocation.ID, nil)
-
-				if allocErr != nil {
-					log.Error("Unable to find alloc: ", allocErr)
-					break AppFileExistanceLoop
-				}
-
-				if allocation.ClientStatus != "running" {
-					log.Warning(fmt.Sprintf("Allocation is stopped: %s", allocation.ID))
-					break AppFileExistanceLoop
-				}
-
-				time.Sleep(time.Second * 5)
-				select {
-				case <-cancel:
-					log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", allocation.ID, taskName, logType))
-					break AppFileExistanceLoop
-				default:
-					data, _, err = client.AllocFS().Stat(allocation, conf.ApplicationLogsFileName, nil)
-				}
-			} else {
-				break AppFileExistanceLoop
-			}
-		}
-
-		if err != nil {
-			log.Error("Error calculating application file size: ", err)
-			for _, c := range cancelChannels {
-				c <- true
-			}
-			return
-		}
-
-		if data.Size < offsetBytes {
-			offsetBytes = 0
-		}
-
-		stream, errors = client.AllocFS().Stream(allocation, conf.ApplicationLogsFileName, "start", offsetBytes, stopChan, nil)
-		itemType = "nomad-leader"
-
-		if len(conf.ApplicationLogsType) > 0 {
-			itemType = conf.ApplicationLogsType
-		}
-
-		if len(conf.ApplicationLogsEndOfLogDelim) > 0 && len(conf.ApplicationLogsType) > 0 {
-			delim = conf.ApplicationLogsEndOfLogDelim
-		} else if len(conf.ApplicationLogsEndOfLogDelim) > 0 && len(conf.ApplicationLogsType) == 0 {
-			log.Warn(fmt.Sprintf("Allocation: %s Application logs that have a new end of log delim must also specify a type.", allocation.ID))
+		if len(logFile.Delim) > 0 {
+			delim = logFile.Delim
 		}
 	default:
 		log.Panic("Invalid log type provided.")
@@ -622,9 +462,11 @@ StreamLoop:
 
 					log.Debug(fmt.Sprintf("%s %s %s %d", allocation.ID, taskName, logType, bytes))
 
-					logItems := []logItem{}
-
-					var currentItem logItem
+					logItems := []logItem{
+						logItem{
+							"message": "",
+						},
+					}
 
 					reg, err := regexp.Compile(delim)
 
@@ -641,20 +483,24 @@ StreamLoop:
 							continue
 						}
 
-						if reg.MatchString(line) {
-							if _, ok := currentItem["message"]; ok {
-								logItems = append(logItems, currentItem)
+						if reg.MatchString(line) || delim == "\n" {
+							if _, ok := logItems[len(logItems)-1]["message"]; ok && len(logItems[len(logItems)-1]["message"]) > 0 {
+								logItems = append(logItems, logItem{
+									"message": line,
+								})
+							} else {
+								if len(logItems[len(logItems)-1]["message"]) > 0 {
+									logItems[len(logItems)-1]["message"] = logItems[len(logItems)-1]["message"] + "\n" + line
+								} else {
+									logItems[len(logItems)-1]["message"] = line
+								}
 							}
-
-							currentItem = logItem{
-								"message": line,
-							}
-						} else if _, ok := currentItem["message"]; ok {
-							currentItem["message"] = currentItem["message"] + "\n" + line
 						} else {
-							logItems = append(logItems, logItem{
-								"message": line,
-							})
+							if len(logItems[len(logItems)-1]["message"]) > 0 {
+								logItems[len(logItems)-1]["message"] = logItems[len(logItems)-1]["message"] + "\n" + line
+							} else {
+								logItems[len(logItems)-1]["message"] = line
+							}
 						}
 					}
 
@@ -667,6 +513,7 @@ StreamLoop:
 						item["allocation"] = allocation.ID
 						item["job"] = allocation.JobID
 						item["group"] = allocation.TaskGroup
+						item["task"] = taskName
 
 						msg, err := json.Marshal(item)
 
@@ -761,43 +608,29 @@ func allocationCleanup(nomadClient *nomad.Client, kv *consul.KV, consulPath stri
 	allocationCleanup(nomadClient, kv, consulPath, maxAge)
 }
 
-func buildMetaConfig(meta map[string]string) metaConfig {
-	config := metaConfig{}
+func buildTaskMetaConfig(meta map[string]string) taskMetaConfig {
+	config := taskMetaConfig{}
 
 	if value, ok := meta["logzio_type"]; ok {
 		config.Type = value
 	}
 
+	if value, ok := meta["logzio_delim"]; ok {
+		config.Delim = value
+	}
+
+	return config
+}
+
+func buildMetaConfig(meta map[string]string) metaConfig {
+	config := metaConfig{}
+
 	if value, ok := meta["logzio_map_job_name_to_property"]; ok {
 		config.MapJobNameToProperty = value
 	}
 
-	if value, ok := meta["logzio_srderr_end_of_log_delim"]; ok {
-		config.StdEndOfLogDelim = value
-	}
-
-	if value, ok := meta["logzio_nginx_access_logs"]; ok {
-		config.NginxAccessLogsFileName = value
-	}
-
-	if value, ok := meta["logzio_nginx_error_logs"]; ok {
-		config.NginxErrorLogsFileName = value
-	}
-
-	if value, ok := meta["logzio_leader_logs"]; ok {
-		config.ApplicationLogsFileName = value
-	}
-
-	if value, ok := meta["logzio_leader_end_of_log_delim"]; ok {
-		config.ApplicationLogsEndOfLogDelim = value
-	}
-
-	if value, ok := meta["logzio_leader_type"]; ok {
-		config.ApplicationLogsType = value
-	}
-
 	// Format of "/path/to/file:my_type:delim", Example: "/alloc/logs/app.log:app-logs:\n"
-	// The 2nd and 3rd parts are optional. Multiple files can be specified, Example: "/alloc/logs/app.log:app-logs:\n,/alloc/logs/other.log"
+	// The 3rd part is optional. Multiple files can be specified, Example: "/alloc/logs/app.log:app-logs:\n,/alloc/logs/other.log:my-type"
 	if value, ok := meta["logzio_log_files"]; ok {
 		var logFiles []logFileConfig
 

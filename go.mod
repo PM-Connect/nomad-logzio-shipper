@@ -25,6 +25,6 @@ require (
 	github.com/sirupsen/logrus v1.2.0
 	github.com/syndtr/goleveldb v0.0.0-20181105012736-f9080354173f // indirect
 	github.com/ugorji/go/codec v0.0.0-20181022190402-e5e69e061d4f // indirect
-	github.com/vjeantet/grok v1.0.0
+	github.com/vjeantet/grok v1.0.0 // indirect
 	go.uber.org/atomic v1.3.2 // indirect
 )
