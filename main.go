@@ -456,6 +456,10 @@ StreamLoop:
 		case data := <-stream:
 			var bytes int
 
+			if data == nil {
+				continue StreamLoop
+			}
+
 			if len(data.FileEvent) > 0 {
 				offsetBytes = 0
 			} else {
