@@ -18,7 +18,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-type logItem map[string]*string
+type logItem map[string]string
 
 type processStats struct {
 	BytesRead   int64     `json:"bytes"`
@@ -120,10 +120,10 @@ func main() {
 	}
 
 	allocationJobs := make(chan *nomad.Allocation)
-	allocationWorkers := map[*string]chan bool{}
+	allocationWorkers := map[string]chan bool{}
 
-	go syncAllocations(client, &nomadClientID, allocationJobs)
-	go allocationCleanup(client, kv, &consulPath, &maxAge)
+	go syncAllocations(client, nomadClientID, allocationJobs)
+	go allocationCleanup(client, kv, consulPath, maxAge)
 
 	exit := make(chan string)
 
@@ -134,11 +134,11 @@ Loop:
 			log.Error(fmt.Sprintf("Exiting: %s", reason))
 			break Loop
 		case allocation := <-allocationJobs:
-			allocationWorker, allocationWorkerAvailable := allocationWorkers[&allocation.ID]
+			allocationWorker, allocationWorkerAvailable := allocationWorkers[allocation.ID]
 
 			if !allocationWorkerAvailable {
 				allocationWorker = make(chan bool, 1)
-				allocationWorkers[&allocation.ID] = allocationWorker
+				allocationWorkers[allocation.ID] = allocationWorker
 			}
 
 			if len(allocationWorker) == 0 {
@@ -178,7 +178,7 @@ Loop:
 						}
 					}
 
-					conf := buildMetaConfig(&allocGroup.Meta)
+					conf := buildMetaConfig(allocGroup.Meta)
 
 					for i := range conf.LogFiles {
 						c := make(chan bool)
@@ -195,23 +195,21 @@ Loop:
 								stopStderr := make(chan struct{})
 								stopStdout := make(chan struct{})
 
-								taskConfig := buildTaskMetaConfig(&task.Meta)
+								taskConfig := buildTaskMetaConfig(task.Meta)
 
-								go shipLogs(StdErr, conf, taskConfig, &wg, allocation, &task.Name, kv, client, &consulPath, stopStderr, filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]), channels[task.Name+"_stderr"], l, nil)
-								go shipLogs(StdOut, conf, taskConfig, &wg, allocation, &task.Name, kv, client, &consulPath, stopStdout, filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]), channels[task.Name+"_stdout"], l, nil)
+								go shipLogs(StdErr, conf, &taskConfig, &wg, allocation, task.Name, kv, client, consulPath, stopStderr, filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]), channels[task.Name+"_stderr"], l, nil)
+								go shipLogs(StdOut, conf, &taskConfig, &wg, allocation, task.Name, kv, client, consulPath, stopStdout, filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]), channels[task.Name+"_stdout"], l, nil)
 							}
 
 							break GroupShipLoop
 						}
 					}
 
-					fileTaskName := "leader"
-
 					for i := range conf.LogFiles {
 						wg.Add(1)
 						stop := make(chan struct{})
 						c := channels["file_"+strconv.Itoa(i)]
-						go shipLogs("file", conf, nil, &wg, allocation, &fileTaskName, kv, client, &consulPath, stop, filterCancelChannels(cancelChannels, c), c, l, &conf.LogFiles[i])
+						go shipLogs("file", conf, nil, &wg, allocation, "leader", kv, client, consulPath, stop, filterCancelChannels(cancelChannels, c), c, l, &conf.LogFiles[i])
 					}
 
 					if randomisedRestart {
@@ -231,15 +229,15 @@ Loop:
 	}
 }
 
-func getNomadAllocations(client *nomad.Client, nodeID *string) ([]*nomad.Allocation, error) {
+func getNomadAllocations(client *nomad.Client, nodeID string) ([]*nomad.Allocation, error) {
 	query := nomad.QueryOptions{}
 
-	allocations, _, err := client.Nodes().Allocations(*nodeID, &query)
+	allocations, _, err := client.Nodes().Allocations(nodeID, &query)
 
 	return allocations, err
 }
 
-func syncAllocations(client *nomad.Client, nodeID *string, allocationJobs chan<- *nomad.Allocation) {
+func syncAllocations(client *nomad.Client, nodeID string, allocationJobs chan<- *nomad.Allocation) {
 	if initialized {
 		nextTime := time.Now().Truncate(time.Second * 20)
 		nextTime = nextTime.Add(time.Second * 20)
@@ -263,7 +261,7 @@ func syncAllocations(client *nomad.Client, nodeID *string, allocationJobs chan<-
 	syncAllocations(client, nodeID, allocationJobs)
 }
 
-func shipLogs(logType string, conf *metaConfig, taskConf *taskMetaConfig, wg *sync.WaitGroup, allocation *nomad.Allocation, taskName *string, kv *consul.KV, client *nomad.Client, consulPath *string, stopChan chan struct{}, cancelChannels []chan bool, cancel chan bool, l *logzio.LogzioSender, logFile *logFileConfig) {
+func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *sync.WaitGroup, allocation *nomad.Allocation, taskName string, kv *consul.KV, client *nomad.Client, consulPath string, stopChan chan struct{}, cancelChannels []chan bool, cancel chan bool, l *logzio.LogzioSender, logFile *logFileConfig) {
 	defer wg.Done()
 
 	allocation, _, err := client.Allocations().Info(allocation.ID, nil)
@@ -285,20 +283,20 @@ func shipLogs(logType string, conf *metaConfig, taskConf *taskMetaConfig, wg *sy
 	}
 
 	if logFile != nil {
-		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s %s", allocation.ID, *taskName, logType, logFile.Path))
+		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s %s", allocation.ID, taskName, logType, logFile.Path))
 	} else {
-		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s", allocation.ID, *taskName, logType))
+		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s", allocation.ID, taskName, logType))
 	}
 
 	var bytePostionIdentifier string
 
 	if logFile == nil {
-		bytePostionIdentifier = fmt.Sprintf("%s:%s:%s", allocation.ID, *taskName, logType)
+		bytePostionIdentifier = fmt.Sprintf("%s:%s:%s", allocation.ID, taskName, logType)
 	} else {
-		bytePostionIdentifier = fmt.Sprintf("%s:%s:%s:%s", allocation.ID, *taskName, logType, strings.Replace(logFile.Path, "/", "-", -1))
+		bytePostionIdentifier = fmt.Sprintf("%s:%s:%s:%s", allocation.ID, taskName, logType, strings.Replace(logFile.Path, "/", "-", -1))
 	}
 
-	pair, _, err := kv.Get(fmt.Sprintf("%s/%s", *consulPath, bytePostionIdentifier), nil)
+	pair, _, err := kv.Get(fmt.Sprintf("%s/%s", consulPath, bytePostionIdentifier), nil)
 
 	if err != nil {
 		log.Error("Error fetching consul log shipping stats: ", err)
@@ -338,7 +336,7 @@ func shipLogs(logType string, conf *metaConfig, taskConf *taskMetaConfig, wg *sy
 	case "stderr":
 		fallthrough
 	case "stdout":
-		data, _ := client.AllocFS().Logs(allocation, false, *taskName, logType, "start", offsetBytes, stopChan, nil)
+		data, _ := client.AllocFS().Logs(allocation, false, taskName, logType, "start", offsetBytes, stopChan, nil)
 
 		content := <-data
 
@@ -350,7 +348,7 @@ func shipLogs(logType string, conf *metaConfig, taskConf *taskMetaConfig, wg *sy
 			}
 		}
 
-		stream, errors = client.AllocFS().Logs(allocation, true, *taskName, logType, "start", offsetBytes, stopChan, nil)
+		stream, errors = client.AllocFS().Logs(allocation, true, taskName, logType, "start", offsetBytes, stopChan, nil)
 
 		itemType = "nomad-" + logType
 
@@ -393,7 +391,7 @@ func shipLogs(logType string, conf *metaConfig, taskConf *taskMetaConfig, wg *sy
 				time.Sleep(time.Second * 5)
 				select {
 				case <-cancel:
-					log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", allocation.ID, *taskName, logType))
+					log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", allocation.ID, taskName, logType))
 					break FileExistanceLoop
 				default:
 					data, _, err = client.AllocFS().Stat(allocation, logFile.Path, nil)
@@ -450,15 +448,11 @@ StreamLoop:
 
 			break StreamLoop
 		case <-cancel:
-			log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", allocation.ID, *taskName, logType))
+			log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", allocation.ID, taskName, logType))
 			stopChan <- struct{}{}
 			break StreamLoop
 		case data := <-stream:
 			var bytes int
-
-			if data == nil {
-				continue StreamLoop
-			}
 
 			if len(data.FileEvent) > 0 {
 				offsetBytes = 0
@@ -468,11 +462,11 @@ StreamLoop:
 				if offsetBytes > 0 && pair != nil {
 					value := string(data.Data)
 
-					log.Debug(fmt.Sprintf("%s %s %s %d", allocation.ID, *taskName, logType, bytes))
+					log.Debug(fmt.Sprintf("%s %s %s %d", allocation.ID, taskName, logType, bytes))
 
 					logItems := []logItem{
 						logItem{
-							"message": new(string),
+							"message": "",
 						},
 					}
 
@@ -492,37 +486,35 @@ StreamLoop:
 						}
 
 						if reg.MatchString(line) || delim == "\n" {
-							if _, ok := logItems[len(logItems)-1]["message"]; ok && len(*logItems[len(logItems)-1]["message"]) > 0 {
+							if _, ok := logItems[len(logItems)-1]["message"]; ok && len(logItems[len(logItems)-1]["message"]) > 0 {
 								logItems = append(logItems, logItem{
-									"message": &line,
+									"message": line,
 								})
 							} else {
-								if len(*logItems[len(logItems)-1]["message"]) > 0 {
-									lineValue := *logItems[len(logItems)-1]["message"] + "\n" + line
-									logItems[len(logItems)-1]["message"] = &lineValue
+								if len(logItems[len(logItems)-1]["message"]) > 0 {
+									logItems[len(logItems)-1]["message"] = logItems[len(logItems)-1]["message"] + "\n" + line
 								} else {
-									logItems[len(logItems)-1]["message"] = &line
+									logItems[len(logItems)-1]["message"] = line
 								}
 							}
 						} else {
-							if len(*logItems[len(logItems)-1]["message"]) > 0 {
-								lineValue := *logItems[len(logItems)-1]["message"] + "\n" + line
-								logItems[len(logItems)-1]["message"] = &lineValue
+							if len(logItems[len(logItems)-1]["message"]) > 0 {
+								logItems[len(logItems)-1]["message"] = logItems[len(logItems)-1]["message"] + "\n" + line
 							} else {
-								logItems[len(logItems)-1]["message"] = &line
+								logItems[len(logItems)-1]["message"] = line
 							}
 						}
 					}
 
 					for _, item := range logItems {
-						if len(conf.MapJobNameToProperty) > 0 && *item[conf.MapJobNameToProperty] != allocation.JobID {
-							item[conf.MapJobNameToProperty] = &allocation.JobID
+						if len(conf.MapJobNameToProperty) > 0 && item[conf.MapJobNameToProperty] != allocation.JobID {
+							item[conf.MapJobNameToProperty] = allocation.JobID
 						}
 
-						item["type"] = &itemType
-						item["allocation"] = &allocation.ID
-						item["job"] = &allocation.JobID
-						item["group"] = &allocation.TaskGroup
+						item["type"] = itemType
+						item["allocation"] = allocation.ID
+						item["job"] = allocation.JobID
+						item["group"] = allocation.TaskGroup
 						item["task"] = taskName
 
 						msg, err := json.Marshal(item)
@@ -558,7 +550,7 @@ StreamLoop:
 				break
 			}
 
-			p := &consul.KVPair{Key: fmt.Sprintf("%s/%s", *consulPath, bytePostionIdentifier), Value: []byte(statsJSON)}
+			p := &consul.KVPair{Key: fmt.Sprintf("%s/%s", consulPath, bytePostionIdentifier), Value: []byte(statsJSON)}
 
 			_, err = kv.Put(p, nil)
 
@@ -574,15 +566,15 @@ StreamLoop:
 		}
 	}
 
-	log.Warn(fmt.Sprintf("Loop finished for alloc: %s Task: %s, Type: %s", allocation.ID, *taskName, logType))
+	log.Warn(fmt.Sprintf("Loop finished for alloc: %s Task: %s, Type: %s", allocation.ID, taskName, logType))
 }
 
-func allocationCleanup(nomadClient *nomad.Client, kv *consul.KV, consulPath *string, maxAge *int) {
+func allocationCleanup(nomadClient *nomad.Client, kv *consul.KV, consulPath string, maxAge int) {
 	nextTime := time.Now().Truncate(time.Second * 60)
 	nextTime = nextTime.Add(time.Second * 60)
 	time.Sleep(time.Until(nextTime))
 
-	pairs, _, err := kv.List(*consulPath, nil)
+	pairs, _, err := kv.List(consulPath, nil)
 
 	if err != nil {
 		log.Error(err)
@@ -603,7 +595,7 @@ func allocationCleanup(nomadClient *nomad.Client, kv *consul.KV, consulPath *str
 
 		age := now.Sub(stats.LastSeen).Hours() / 24
 
-		if int(age) >= *maxAge {
+		if int(age) >= maxAge {
 			log.Info(fmt.Sprintf("Deleting Key: %s", pair.Key))
 
 			_, err := kv.Delete(pair.Key, nil)
@@ -618,30 +610,30 @@ func allocationCleanup(nomadClient *nomad.Client, kv *consul.KV, consulPath *str
 	allocationCleanup(nomadClient, kv, consulPath, maxAge)
 }
 
-func buildTaskMetaConfig(meta *map[string]string) *taskMetaConfig {
+func buildTaskMetaConfig(meta map[string]string) taskMetaConfig {
 	config := taskMetaConfig{}
 
-	if value, ok := (*meta)["logzio_type"]; ok {
+	if value, ok := meta["logzio_type"]; ok {
 		config.Type = value
 	}
 
-	if value, ok := (*meta)["logzio_delim"]; ok {
+	if value, ok := meta["logzio_delim"]; ok {
 		config.Delim = value
 	}
 
-	return &config
+	return config
 }
 
-func buildMetaConfig(meta *map[string]string) *metaConfig {
+func buildMetaConfig(meta map[string]string) metaConfig {
 	config := metaConfig{}
 
-	if value, ok := (*meta)["logzio_map_job_name_to_property"]; ok {
+	if value, ok := meta["logzio_map_job_name_to_property"]; ok {
 		config.MapJobNameToProperty = value
 	}
 
 	// Format of "/path/to/file:my_type:delim", Example: "/alloc/logs/app.log:app-logs:\n"
 	// The 3rd part is optional. Multiple files can be specified, Example: "/alloc/logs/app.log:app-logs:\n,/alloc/logs/other.log:my-type"
-	if value, ok := (*meta)["logzio_log_files"]; ok {
+	if value, ok := meta["logzio_log_files"]; ok {
 		var logFiles []logFileConfig
 
 		for _, s := range strings.Split(value, ",") {
@@ -671,7 +663,7 @@ func buildMetaConfig(meta *map[string]string) *metaConfig {
 		config.LogFiles = logFiles
 	}
 
-	return &config
+	return config
 }
 
 func randomRestart(allocationID string, cancelChannels []chan bool) {
