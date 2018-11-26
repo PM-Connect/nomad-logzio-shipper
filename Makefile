@@ -4,13 +4,14 @@ GIT_BRANCH := $(subst heads/,,$(shell git rev-parse --abbrev-ref HEAD 2>/dev/nul
 DEV_IMAGE := nomad-logzio-dev$(if $(GIT_BRANCH),:$(subst /,-,$(GIT_BRANCH)))
 DEV_DOCKER_IMAGE := nomad-logzio-bin-dev$(if $(GIT_BRANCH),:$(subst /,-,$(GIT_BRANCH)))
 
-default: clean install crossbinary
+default: clean install crossbinary dockerdeps
 
 clean:
 	rm -rf dist/
+	rm -rf bin/
 
 binary: install
-	GOOS=linux CGO_ENABLED=0 GOGC=off GOARCH=amd64 go build -a -tags netgo -ldflags '-w' -o "$(CURDIR)/dist/nomad-logzio"
+	GOOS=linux CGO_ENABLED=0 GOGC=off GOARCH=amd64 go build -a -tags netgo -ldflags '-w' -o "$(CURDIR)/bin/nomad-logzio"
 
 crossbinary: binary
 	GOOS=linux GOARCH=amd64 go build -o "$(CURDIR)/dist/nomad-logzio-linux-amd64"
