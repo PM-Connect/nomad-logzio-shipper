@@ -4,7 +4,7 @@ GIT_BRANCH := $(subst heads/,,$(shell git rev-parse --abbrev-ref HEAD 2>/dev/nul
 DEV_IMAGE := nomad-logzio-dev$(if $(GIT_BRANCH),:$(subst /,-,$(GIT_BRANCH)))
 DEV_DOCKER_IMAGE := nomad-logzio-bin-dev$(if $(GIT_BRANCH),:$(subst /,-,$(GIT_BRANCH)))
 
-default: clean install crossbinary dockerdeps
+default: clean install crossbinary
 
 clean:
 	rm -rf dist/

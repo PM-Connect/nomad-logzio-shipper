@@ -89,6 +89,8 @@ func main() {
 		log.SetLevel(log.DebugLevel)
 	}
 
+	log.Info(fmt.Sprintf("Watching allocations for node: %s", nomadClientID))
+
 	config := nomad.Config{
 		Address: nomadAddr,
 	}
@@ -111,12 +113,23 @@ func main() {
 
 	kv := consulClient.KV()
 
+	var debugFunc logzio.SenderOptionFunc
+
+	if verbose {
+		debugFunc = logzio.SetDebug(os.Stdout)
+	} else {
+		debugFunc = func(l *logzio.LogzioSender) error {
+			return nil
+		}
+	}
+
 	l, err := logzio.New(
 		logzToken,
 		logzio.SetUrl(logzAddr),
 		logzio.SetDrainDuration(time.Second*1),
 		logzio.SetTempDirectory(queueDir),
 		logzio.SetDrainDiskThreshold(90),
+		debugFunc,
 	)
 
 	if err != nil {
