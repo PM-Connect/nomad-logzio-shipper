@@ -103,7 +103,7 @@ func main() {
 
 	consulConfig.Address = consulAddr
 
-	consulClient, err := consul.NewClient(consul.DefaultConfig())
+	consulClient, err := consul.NewClient(consulConfig)
 
 	if err != nil {
 		log.Panic(err)

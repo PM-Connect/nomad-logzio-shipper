@@ -20,6 +20,7 @@ crossbinary: binary
 	GOOS=darwin GOARCH=386 go build -o "$(CURDIR)/dist/nomad-logzio-darwin-386"
 	GOOS=windows GOARCH=amd64 go build -o "$(CURDIR)/dist/nomad-logzio-windows-amd64.exe"
 	GOOS=windows GOARCH=386 go build -o "$(CURDIR)/dist/nomad-logzio-windows-386.exe"
+	GOOS=linux CGO_ENABLED=0 GOGC=off GOARCH=amd64 go build -a -tags netgo -ldflags '-w' -o "$(CURDIR)/dist/nomad-logzio"
 
 install: clean
 	go mod vendor
