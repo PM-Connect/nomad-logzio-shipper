@@ -60,7 +60,7 @@ func main() {
 	flags := flag.NewFlagSet("command", flag.ContinueOnError)
 	flags.StringVar(&nomadAddr, "nomad", "http://127.0.0.1:4646", "The nomad address to talk to.")
 	flags.StringVar(&nomadClientID, "node", "", "The ID of the nomad client/node to scrape logs from.")
-	flags.StringVar(&consulAddr, "consul", "http://127.0.0.1:8500", "The consul address to talk to.")
+	flags.StringVar(&consulAddr, "consul", "127.0.0.1:8500", "The consul address to talk to.")
 	flags.StringVar(&logzToken, "logz-token", "", "Your logz.io token.")
 	flags.StringVar(&logzAddr, "logz-addr", "https://listener-eu.logz.io:8071", "The logz.io endpoint.")
 	flags.BoolVar(&verbose, "verbose", false, "Enable verbose logging.")
@@ -98,6 +98,10 @@ func main() {
 	if err != nil {
 		log.Panic(err)
 	}
+
+	consulConfig := consul.DefaultConfig()
+
+	consulConfig.Address = consulAddr
 
 	consulClient, err := consul.NewClient(consul.DefaultConfig())
 
