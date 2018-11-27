@@ -29,11 +29,16 @@ type processStats struct {
 type metaConfig struct {
 	MapJobNameToProperty string
 	LogFiles             []logFileConfig
+	Enabled              bool
 }
 
 type taskMetaConfig struct {
-	Type  string
-	Delim string
+	ErrType    string
+	ErrDelim   string
+	ErrEnabled bool
+	OutType    string
+	OutDelim   string
+	OutEnabled bool
 }
 
 type logFileConfig struct {
@@ -90,6 +95,7 @@ func main() {
 	}
 
 	log.Info(fmt.Sprintf("Watching allocations for node: %s", nomadClientID))
+	log.Info(fmt.Sprintf("Consul Addr: %s Nomad Addr: %s", consulAddr, nomadAddr))
 
 	config := nomad.Config{
 		Address: nomadAddr,
@@ -181,14 +187,18 @@ Loop:
 							allocGroup = group
 
 							for _, t := range group.Tasks {
-								cancelStderr := make(chan bool)
-								cancelStdout := make(chan bool)
+								taskConfig := buildTaskMetaConfig(t.Meta)
+								if taskConfig.ErrEnabled {
+									cancelStderr := make(chan bool)
+									cancelChannels = append(cancelChannels, cancelStderr)
+									channels[t.Name+"_stderr"] = cancelStderr
+								}
 
-								cancelChannels = append(cancelChannels, cancelStderr)
-								cancelChannels = append(cancelChannels, cancelStdout)
-
-								channels[t.Name+"_stderr"] = cancelStderr
-								channels[t.Name+"_stdout"] = cancelStdout
+								if taskConfig.OutEnabled {
+									cancelStdout := make(chan bool)
+									cancelChannels = append(cancelChannels, cancelStdout)
+									channels[t.Name+"_stdout"] = cancelStdout
+								}
 							}
 
 							break GroupListLoop
@@ -207,15 +217,19 @@ Loop:
 					for _, group := range allocation.Job.TaskGroups {
 						if *group.Name == allocation.TaskGroup {
 							for _, task := range group.Tasks {
-								wg.Add(2)
-
-								stopStderr := make(chan struct{})
-								stopStdout := make(chan struct{})
-
 								taskConfig := buildTaskMetaConfig(task.Meta)
 
-								go shipLogs(StdErr, conf, &taskConfig, &wg, allocation, task.Name, kv, client, consulPath, stopStderr, filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]), channels[task.Name+"_stderr"], l, nil)
-								go shipLogs(StdOut, conf, &taskConfig, &wg, allocation, task.Name, kv, client, consulPath, stopStdout, filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]), channels[task.Name+"_stdout"], l, nil)
+								if taskConfig.ErrEnabled {
+									wg.Add(1)
+									stopStderr := make(chan struct{})
+									go shipLogs(StdErr, conf, &taskConfig, &wg, allocation, task.Name, kv, client, consulPath, stopStderr, filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]), channels[task.Name+"_stderr"], l, nil)
+								}
+
+								if taskConfig.OutEnabled {
+									wg.Add(1)
+									stopStdout := make(chan struct{})
+									go shipLogs(StdOut, conf, &taskConfig, &wg, allocation, task.Name, kv, client, consulPath, stopStdout, filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]), channels[task.Name+"_stdout"], l, nil)
+								}
 							}
 
 							break GroupShipLoop
@@ -351,7 +365,31 @@ func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *syn
 
 	switch logType {
 	case "stderr":
-		fallthrough
+		data, _ := client.AllocFS().Logs(allocation, false, taskName, logType, "start", offsetBytes, stopChan, nil)
+
+		content := <-data
+
+		if content != nil {
+			size := len(content.Data)
+
+			if int64(size) < offsetBytes {
+				offsetBytes = 0
+			}
+		}
+
+		stream, errors = client.AllocFS().Logs(allocation, true, taskName, logType, "start", offsetBytes, stopChan, nil)
+
+		itemType = "nomad-" + logType
+
+		if taskConf != nil && len(taskConf.ErrType) > 0 {
+			itemType = taskConf.ErrType
+		}
+
+		delim = "\n"
+
+		if taskConf != nil && len(taskConf.ErrDelim) > 0 {
+			delim = taskConf.ErrDelim
+		}
 	case "stdout":
 		data, _ := client.AllocFS().Logs(allocation, false, taskName, logType, "start", offsetBytes, stopChan, nil)
 
@@ -369,14 +407,14 @@ func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *syn
 
 		itemType = "nomad-" + logType
 
-		if taskConf != nil && len(taskConf.Type) > 0 {
-			itemType = taskConf.Type
+		if taskConf != nil && len(taskConf.OutType) > 0 {
+			itemType = taskConf.OutType
 		}
 
 		delim = "\n"
 
-		if taskConf != nil && len(taskConf.Delim) > 0 {
-			delim = taskConf.Delim
+		if taskConf != nil && len(taskConf.OutDelim) > 0 {
+			delim = taskConf.OutDelim
 		}
 	case "file":
 		if logFile == nil {
@@ -630,12 +668,32 @@ func allocationCleanup(nomadClient *nomad.Client, kv *consul.KV, consulPath stri
 func buildTaskMetaConfig(meta map[string]string) taskMetaConfig {
 	config := taskMetaConfig{}
 
-	if value, ok := meta["logzio_type"]; ok {
-		config.Type = value
+	if value, ok := meta["logzio_stderr_type"]; ok {
+		config.ErrType = value
 	}
 
-	if value, ok := meta["logzio_delim"]; ok {
-		config.Delim = value
+	if value, ok := meta["logzio_stderr_delim"]; ok {
+		config.ErrDelim = value
+	}
+
+	if value, ok := meta["logzio_stderr_enabled"]; ok && value == "false" {
+		config.ErrEnabled = false
+	} else {
+		config.ErrEnabled = true
+	}
+
+	if value, ok := meta["logzio_stdout_type"]; ok {
+		config.OutType = value
+	}
+
+	if value, ok := meta["logzio_stdout_delim"]; ok {
+		config.OutDelim = value
+	}
+
+	if value, ok := meta["logzio_stdout_enabled"]; ok && value == "false" {
+		config.OutEnabled = false
+	} else {
+		config.OutEnabled = true
 	}
 
 	return config
@@ -643,10 +701,6 @@ func buildTaskMetaConfig(meta map[string]string) taskMetaConfig {
 
 func buildMetaConfig(meta map[string]string) metaConfig {
 	config := metaConfig{}
-
-	if value, ok := meta["logzio_map_job_name_to_property"]; ok {
-		config.MapJobNameToProperty = value
-	}
 
 	// Format of "/path/to/file:my_type:delim", Example: "/alloc/logs/app.log:app-logs:\n"
 	// The 3rd part is optional. Multiple files can be specified, Example: "/alloc/logs/app.log:app-logs:\n,/alloc/logs/other.log:my-type"
@@ -678,6 +732,12 @@ func buildMetaConfig(meta map[string]string) metaConfig {
 		}
 
 		config.LogFiles = logFiles
+	}
+
+	if value, ok := meta["logzio_enabled"]; ok && value == "false" {
+		config.Enabled = false
+	} else {
+		config.Enabled = true
 	}
 
 	return config
