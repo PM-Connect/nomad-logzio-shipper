@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"math/rand"
+	"github.com/pm-connect/nomad-logzio-shipper/allocation"
 	"os"
 	"regexp"
 	"strconv"
@@ -47,31 +47,28 @@ type logFileConfig struct {
 	Type  string
 }
 
-var initialized bool
-
-// StdOut is the name of the log type that nomad uses to reference stdout.
+// StdOut is the name of the log type that allocation uses to reference stdout.
 const StdOut string = "stdout"
 
-// StdErr is the name of the log type that nomad uses to reference stderr.
+// StdErr is the name of the log type that allocation uses to reference stderr.
 const StdErr string = "stderr"
 
 func main() {
 	var nomadAddr, nomadClientID, consulAddr, logzToken, logzAddr, consulPath, queueDir string
-	var verbose, randomisedRestart bool
+	var verbose bool
 	var maxAge int
 
 	args := os.Args[1:]
 
 	flags := flag.NewFlagSet("command", flag.ContinueOnError)
-	flags.StringVar(&nomadAddr, "nomad", "http://127.0.0.1:4646", "The nomad address to talk to.")
-	flags.StringVar(&nomadClientID, "node", "", "The ID of the nomad client/node to scrape logs from.")
+	flags.StringVar(&nomadAddr, "nomad", "http://127.0.0.1:4646", "The allocation address to talk to.")
+	flags.StringVar(&nomadClientID, "node", "", "The ID of the allocation client/node to scrape logs from.")
 	flags.StringVar(&consulAddr, "consul", "127.0.0.1:8500", "The consul address to talk to.")
 	flags.StringVar(&logzToken, "logz-token", "", "Your logz.io token.")
 	flags.StringVar(&logzAddr, "logz-addr", "https://listener-eu.logz.io:8071", "The logz.io endpoint.")
 	flags.BoolVar(&verbose, "verbose", false, "Enable verbose logging.")
 	flags.IntVar(&maxAge, "max-age", 7, "Set the maximum age in days for allocation log state to be stored in consul for.")
 	flags.StringVar(&consulPath, "consul-path", "logzio-nomad", "The KV path in consul to store allocation log state.")
-	flags.BoolVar(&randomisedRestart, "random-restart", false, "Should the streaming of logs be restarted at random intervals. (Mostly for testing.)")
 	flags.StringVar(&queueDir, "queue-dir", ".Queue", "The directory to store logzio messages before sending.")
 
 	err := flags.Parse(args)
@@ -85,13 +82,13 @@ func main() {
 	if envToken := os.Getenv("LOGZIO_TOKEN"); logzToken == "" && envToken != "" {
 		logzToken = envToken
 	} else if logzToken == "" {
-		log.Fatal("No logzio token provided as an argument or in the LOGZIO_TOKEN env variable.")
+		log.Fatal("No logzio token was provided as an argument or in the LOGZIO_TOKEN env variable.")
 	}
 
 	if envNomadClientID := os.Getenv("NOMAD_CLIENT_ID"); nomadClientID == "" && envNomadClientID != "" {
 		nomadClientID = envNomadClientID
 	} else if nomadClientID == "" {
-		log.Fatal("No nomad client/node id provided as an argument or in the NOMAD_CLIENT_ID env variable.")
+		log.Fatal("No nomad client/node id was provided as an argument or in the NOMAD_CLIENT_ID env variable.")
 	}
 
 	if verbose {
@@ -136,7 +133,7 @@ func main() {
 	l, err := logzio.New(
 		logzToken,
 		logzio.SetUrl(logzAddr),
-		logzio.SetDrainDuration(time.Second*1),
+		logzio.SetDrainDuration(time.Millisecond*500),
 		logzio.SetTempDirectory(queueDir),
 		logzio.SetDrainDiskThreshold(90),
 		debugFunc,
@@ -146,10 +143,17 @@ func main() {
 		log.Panic(err)
 	}
 
-	allocationJobs := make(chan *nomad.Allocation)
-	allocationWorkers := map[string]chan bool{}
+	var currentAllocations []*nomad.Allocation
+	addAllocation := make(chan *nomad.Allocation)
+	removeAllocation := make(chan *nomad.Allocation)
+	allocationSyncErrors := make(chan error)
+	allocationCancellation := map[string]chan bool{}
 
-	go syncAllocations(client, nomadClientID, allocationJobs)
+	allocationClient := allocation.Client{
+		NomadClient: client,
+	}
+
+	go allocationClient.SyncAllocations(&nomadClientID, &currentAllocations, addAllocation, removeAllocation, allocationSyncErrors, allocation.DefaultPollInterval)
 	go allocationCleanup(client, kv, consulPath, maxAge)
 
 	exit := make(chan string)
@@ -160,157 +164,137 @@ Loop:
 		case reason := <-exit:
 			log.Error(fmt.Sprintf("Exiting: %s", reason))
 			break Loop
-		case allocation := <-allocationJobs:
-			allocationWorker, allocationWorkerAvailable := allocationWorkers[allocation.ID]
+		case err := <-allocationSyncErrors:
+			log.Error(fmt.Sprintf("Error syncing allocations: %s", err))
+		case alloc := <-removeAllocation:
+			cancelChan, ok := allocationCancellation[alloc.ID]
 
-			if !allocationWorkerAvailable {
-				allocationWorker = make(chan bool, 1)
-				allocationWorkers[allocation.ID] = allocationWorker
+			if ok {
+				cancelChan <- true
 			}
 
-			if len(allocationWorker) == 0 {
-				allocationWorker <- true
+			err := purgeAllocationData(alloc, kv, &consulPath)
 
-				log.Info(fmt.Sprintf("Starting for allocation: %s", allocation.ID))
-
-				go func(allocation *nomad.Allocation) {
-					defer func() {
-						<-allocationWorker
-					}()
-
-					var wg sync.WaitGroup
-
-					var cancelChannels []chan bool
-					channels := map[string]chan bool{}
-
-					var allocGroup *nomad.TaskGroup
-
-				GroupListLoop:
-					for _, group := range allocation.Job.TaskGroups {
-						if *group.Name == allocation.TaskGroup {
-							allocGroup = group
-
-							for _, t := range group.Tasks {
-								taskConfig := buildTaskMetaConfig(t.Meta)
-								if taskConfig.ErrEnabled {
-									cancelStderr := make(chan bool)
-									cancelChannels = append(cancelChannels, cancelStderr)
-									channels[t.Name+"_stderr"] = cancelStderr
-								}
-
-								if taskConfig.OutEnabled {
-									cancelStdout := make(chan bool)
-									cancelChannels = append(cancelChannels, cancelStdout)
-									channels[t.Name+"_stdout"] = cancelStdout
-								}
-							}
-
-							break GroupListLoop
-						}
-					}
-
-					conf := buildMetaConfig(allocGroup.Meta)
-
-					for i := range conf.LogFiles {
-						c := make(chan bool)
-						cancelChannels = append(cancelChannels, c)
-						channels["file_"+strconv.Itoa(i)] = c
-					}
-
-				GroupShipLoop:
-					for _, group := range allocation.Job.TaskGroups {
-						if *group.Name == allocation.TaskGroup {
-							for _, task := range group.Tasks {
-								taskConfig := buildTaskMetaConfig(task.Meta)
-
-								if taskConfig.ErrEnabled {
-									wg.Add(1)
-									stopStderr := make(chan struct{})
-									go shipLogs(StdErr, conf, &taskConfig, &wg, allocation, task.Name, kv, client, consulPath, stopStderr, filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]), channels[task.Name+"_stderr"], l, nil)
-								}
-
-								if taskConfig.OutEnabled {
-									wg.Add(1)
-									stopStdout := make(chan struct{})
-									go shipLogs(StdOut, conf, &taskConfig, &wg, allocation, task.Name, kv, client, consulPath, stopStdout, filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]), channels[task.Name+"_stdout"], l, nil)
-								}
-							}
-
-							break GroupShipLoop
-						}
-					}
-
-					for i := range conf.LogFiles {
-						wg.Add(1)
-						stop := make(chan struct{})
-						c := channels["file_"+strconv.Itoa(i)]
-						go shipLogs("file", conf, nil, &wg, allocation, "leader", kv, client, consulPath, stop, filterCancelChannels(cancelChannels, c), c, l, &conf.LogFiles[i])
-					}
-
-					if randomisedRestart {
-						go randomRestart(allocation.ID, cancelChannels)
-					}
-
-					log.Debug(fmt.Sprintf("Waiting on WaitGroup for alloc: %s", allocation.ID))
-
-					wg.Wait()
-
-					log.Warn(fmt.Sprintf("Finished collection for alloc: %s", allocation.ID))
-				}(allocation)
+			if err != nil {
+				log.Error(err)
 			}
+
+			log.Info(fmt.Sprintf("Removed allocation: %s", alloc.ID))
+		case alloc := <-addAllocation:
+			log.Info(fmt.Sprintf("Starting for allocation: %s", alloc.ID))
+
+			cancellationChan := make(chan bool)
+
+			allocationCancellation[alloc.ID] = cancellationChan
+
+			go func(alloc *nomad.Allocation) {
+				var wg sync.WaitGroup
+
+				var cancelChannels []chan bool
+				channels := map[string]chan bool{}
+
+				var allocGroup *nomad.TaskGroup
+
+			GroupListLoop:
+				for _, group := range alloc.Job.TaskGroups {
+					if *group.Name == alloc.TaskGroup {
+						allocGroup = group
+
+						for _, t := range group.Tasks {
+							taskConfig := buildTaskMetaConfig(t.Meta)
+							if taskConfig.ErrEnabled {
+								cancelStderr := make(chan bool)
+								cancelChannels = append(cancelChannels, cancelStderr)
+								channels[t.Name+"_stderr"] = cancelStderr
+							}
+
+							if taskConfig.OutEnabled {
+								cancelStdout := make(chan bool)
+								cancelChannels = append(cancelChannels, cancelStdout)
+								channels[t.Name+"_stdout"] = cancelStdout
+							}
+						}
+
+						break GroupListLoop
+					}
+				}
+
+				conf := buildMetaConfig(allocGroup.Meta)
+
+				for i := range conf.LogFiles {
+					c := make(chan bool)
+					cancelChannels = append(cancelChannels, c)
+					channels["file_"+strconv.Itoa(i)] = c
+				}
+
+			GroupShipLoop:
+				for _, group := range alloc.Job.TaskGroups {
+					if *group.Name == alloc.TaskGroup {
+						for _, task := range group.Tasks {
+							taskConfig := buildTaskMetaConfig(task.Meta)
+
+							if taskConfig.ErrEnabled {
+								wg.Add(1)
+								stopStderr := make(chan struct{})
+								go shipLogs(StdErr, conf, &taskConfig, &wg, alloc, task.Name, kv, &allocationClient, &consulPath, stopStderr, filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]), channels[task.Name+"_stderr"], l, nil)
+							}
+
+							if taskConfig.OutEnabled {
+								wg.Add(1)
+								stopStdout := make(chan struct{})
+								go shipLogs(StdOut, conf, &taskConfig, &wg, alloc, task.Name, kv, &allocationClient, &consulPath, stopStdout, filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]), channels[task.Name+"_stdout"], l, nil)
+							}
+						}
+
+						break GroupShipLoop
+					}
+				}
+
+				for i := range conf.LogFiles {
+					wg.Add(1)
+					stop := make(chan struct{})
+					c := channels["file_"+strconv.Itoa(i)]
+					go shipLogs("file", conf, nil, &wg, alloc, "leader", kv, &allocationClient, &consulPath, stop, filterCancelChannels(cancelChannels, c), c, l, &conf.LogFiles[i])
+				}
+
+				log.Debug(fmt.Sprintf("Waiting on WaitGroup for alloc: %s", alloc.ID))
+
+			StopLoop:
+				for {
+					select {
+					case <-cancellationChan:
+						for _, c := range cancelChannels {
+							c <- true
+						}
+						break StopLoop
+					}
+				}
+
+				wg.Wait()
+
+				log.Warn(fmt.Sprintf("Finished collection for alloc: %s", alloc.ID))
+			}(alloc)
 		}
 
 		time.Sleep(time.Millisecond * 100)
 	}
 }
 
-func getNomadAllocations(client *nomad.Client, nodeID string) ([]*nomad.Allocation, error) {
-	query := nomad.QueryOptions{}
-
-	allocations, _, err := client.Nodes().Allocations(nodeID, &query)
-
-	return allocations, err
-}
-
-func syncAllocations(client *nomad.Client, nodeID string, allocationJobs chan<- *nomad.Allocation) {
-	if initialized {
-		nextTime := time.Now().Truncate(time.Second * 20)
-		nextTime = nextTime.Add(time.Second * 20)
-		time.Sleep(time.Until(nextTime))
-	} else {
-		initialized = true
-	}
-
-	allocations, err := getNomadAllocations(client, nodeID)
-
-	if err != nil {
-		log.Panic(err)
-	}
-
-	for _, allocation := range allocations {
-		if allocation.ClientStatus == "running" {
-			allocationJobs <- allocation
-		}
-	}
-
-	syncAllocations(client, nodeID, allocationJobs)
-}
-
-func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *sync.WaitGroup, allocation *nomad.Allocation, taskName string, kv *consul.KV, client *nomad.Client, consulPath string, stopChan chan struct{}, cancelChannels []chan bool, cancel chan bool, l *logzio.LogzioSender, logFile *logFileConfig) {
+func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *sync.WaitGroup, alloc *nomad.Allocation, taskName string, kv *consul.KV, allocClient *allocation.Client, consulPath *string, stopChan chan struct{}, cancelChannels []chan bool, cancel chan bool, l *logzio.LogzioSender, logFile *logFileConfig) {
 	defer wg.Done()
 
-	allocation, _, err := client.Allocations().Info(allocation.ID, nil)
+	alloc, err := allocClient.GetAllocationInfo(alloc.ID)
 
 	if err != nil {
-		log.Error("Error fetching allocation: ", err)
+		log.Error(fmt.Sprintf("Error fetching alloc: %s [%s]", alloc.ID, err))
 		for _, c := range cancelChannels {
 			c <- true
 		}
 		return
 	}
 
-	if allocation.ClientStatus != "running" {
-		log.Error("Error fetching allocation: ", err)
+	if alloc.ClientStatus != "running" {
+		log.Error(fmt.Sprintf("Allocation not running: %s", alloc.ID))
 		for _, c := range cancelChannels {
 			c <- true
 		}
@@ -318,20 +302,20 @@ func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *syn
 	}
 
 	if logFile != nil {
-		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s %s", allocation.ID, taskName, logType, logFile.Path))
+		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s %s", alloc.ID, taskName, logType, logFile.Path))
 	} else {
-		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s", allocation.ID, taskName, logType))
+		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s", alloc.ID, taskName, logType))
 	}
 
-	var bytePostionIdentifier string
+	var consulStatsKey string
 
 	if logFile == nil {
-		bytePostionIdentifier = fmt.Sprintf("%s:%s:%s", allocation.ID, taskName, logType)
+		consulStatsKey = fmt.Sprintf("%s/%s/%s", alloc.ID, taskName, logType)
 	} else {
-		bytePostionIdentifier = fmt.Sprintf("%s:%s:%s:%s", allocation.ID, taskName, logType, strings.Replace(logFile.Path, "/", "-", -1))
+		consulStatsKey = fmt.Sprintf("%s/_files_/%s/%s", alloc.ID, logType, strings.Replace(logFile.Path, "/", "-", -1))
 	}
 
-	pair, _, err := kv.Get(fmt.Sprintf("%s/%s", consulPath, bytePostionIdentifier), nil)
+	pair, _, err := kv.Get(fmt.Sprintf("%s/%s", *consulPath, consulStatsKey), nil)
 
 	if err != nil {
 		log.Error("Error fetching consul log shipping stats: ", err)
@@ -349,7 +333,7 @@ func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *syn
 		err := json.Unmarshal(pair.Value, &stats)
 
 		if err != nil {
-			log.Error("Error converting consul data to struct: ", err)
+			log.Error(fmt.Sprintf("Error converting consul data to struct for alloc %s: ", alloc.ID), err)
 			for _, c := range cancelChannels {
 				c <- true
 			}
@@ -369,9 +353,7 @@ func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *syn
 
 	switch logType {
 	case "stderr":
-		data, _ := client.AllocFS().Logs(allocation, false, taskName, logType, "start", offsetBytes, stopChan, nil)
-
-		content := <-data
+		content := allocClient.GetLog(logType, alloc, taskName, offsetBytes)
 
 		if content != nil {
 			size := len(content.Data)
@@ -381,9 +363,9 @@ func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *syn
 			}
 		}
 
-		stream, errors = client.AllocFS().Logs(allocation, true, taskName, logType, "start", offsetBytes, stopChan, nil)
+		stream, errors = allocClient.StreamLog(logType, alloc, taskName, offsetBytes, stopChan)
 
-		itemType = "nomad-" + logType
+		itemType = "alloc-" + logType
 
 		if taskConf != nil && len(taskConf.ErrType) > 0 {
 			itemType = taskConf.ErrType
@@ -395,9 +377,7 @@ func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *syn
 			delim = taskConf.ErrDelim
 		}
 	case "stdout":
-		data, _ := client.AllocFS().Logs(allocation, false, taskName, logType, "start", offsetBytes, stopChan, nil)
-
-		content := <-data
+		content := allocClient.GetLog(logType, alloc, taskName, offsetBytes)
 
 		if content != nil {
 			size := len(content.Data)
@@ -407,9 +387,9 @@ func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *syn
 			}
 		}
 
-		stream, errors = client.AllocFS().Logs(allocation, true, taskName, logType, "start", offsetBytes, stopChan, nil)
+		stream, errors = allocClient.StreamLog(logType, alloc, taskName, offsetBytes, stopChan)
 
-		itemType = "nomad-" + logType
+		itemType = "alloc-" + logType
 
 		if taskConf != nil && len(taskConf.OutType) > 0 {
 			itemType = taskConf.OutType
@@ -429,34 +409,34 @@ func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *syn
 			return
 		}
 
-		data, _, err := client.AllocFS().Stat(allocation, logFile.Path, nil)
+		data, err := allocClient.StatFile(alloc, logFile.Path)
 
-	FileExistanceLoop:
+	FileExistenceLoop:
 		for err != nil {
 			if strings.Contains(err.Error(), "no such file or directory") {
-				log.Warning("Unable to find file, retrying in 5s: ", err)
-				allocation, _, allocErr := client.Allocations().Info(allocation.ID, nil)
+				log.Warning(fmt.Sprintf("Find not found, 10s retry: %s %s", alloc.ID, logFile.Path))
+				alloc, allocErr := allocClient.GetAllocationInfo(alloc.ID)
 
 				if allocErr != nil {
 					log.Error("Unable to find alloc: ", allocErr)
-					break FileExistanceLoop
+					break FileExistenceLoop
 				}
 
-				if allocation.ClientStatus != "running" {
-					log.Warning(fmt.Sprintf("Allocation is stopped: %s", allocation.ID))
-					break FileExistanceLoop
+				if alloc.ClientStatus != "running" {
+					log.Warning(fmt.Sprintf("Allocation is stopped: %s", alloc.ID))
+					break FileExistenceLoop
 				}
 
-				time.Sleep(time.Second * 5)
+				time.Sleep(time.Second * 10)
 				select {
 				case <-cancel:
-					log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", allocation.ID, taskName, logType))
-					break FileExistanceLoop
+					log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", alloc.ID, taskName, logType))
+					break FileExistenceLoop
 				default:
-					data, _, err = client.AllocFS().Stat(allocation, logFile.Path, nil)
+					data, err = allocClient.StatFile(alloc, logFile.Path)
 				}
 			} else {
-				break FileExistanceLoop
+				break FileExistenceLoop
 			}
 		}
 
@@ -472,7 +452,7 @@ func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *syn
 			offsetBytes = 0
 		}
 
-		stream, errors = client.AllocFS().Stream(allocation, logFile.Path, "start", offsetBytes, stopChan, nil)
+		stream, errors = allocClient.StreamFile(alloc, logFile.Path, offsetBytes, stopChan)
 
 		if len(logFile.Type) == 0 {
 			log.Error("Log file type must be set.")
@@ -488,7 +468,8 @@ func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *syn
 			delim = logFile.Delim
 		}
 	default:
-		log.Panic("Invalid log type provided.")
+		log.Error("Invalid log type provided.")
+		return
 	}
 
 StreamLoop:
@@ -507,7 +488,7 @@ StreamLoop:
 
 			break StreamLoop
 		case <-cancel:
-			log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", allocation.ID, taskName, logType))
+			log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", alloc.ID, taskName, logType))
 			stopChan <- struct{}{}
 			break StreamLoop
 		case data := <-stream:
@@ -521,13 +502,9 @@ StreamLoop:
 				if offsetBytes > 0 && pair != nil {
 					value := string(data.Data)
 
-					log.Debug(fmt.Sprintf("%s %s %s %d", allocation.ID, taskName, logType, bytes))
+					log.Debug(fmt.Sprintf("%s %s %s %d", alloc.ID, taskName, logType, bytes))
 
-					logItems := []logItem{
-						{
-							"message": "",
-						},
-					}
+					logItems := []logItem{{"message": ""}}
 
 					reg, err := regexp.Compile(delim)
 
@@ -566,14 +543,14 @@ StreamLoop:
 					}
 
 					for _, item := range logItems {
-						if len(conf.MapJobNameToProperty) > 0 && item[conf.MapJobNameToProperty] != allocation.JobID {
-							item[conf.MapJobNameToProperty] = allocation.JobID
+						if len(conf.MapJobNameToProperty) > 0 && item[conf.MapJobNameToProperty] != alloc.JobID {
+							item[conf.MapJobNameToProperty] = alloc.JobID
 						}
 
 						item["type"] = itemType
-						item["allocation"] = allocation.ID
-						item["job"] = allocation.JobID
-						item["group"] = allocation.TaskGroup
+						item["allocation"] = alloc.ID
+						item["job"] = alloc.JobID
+						item["group"] = alloc.TaskGroup
 						item["task"] = taskName
 
 						msg, err := json.Marshal(item)
@@ -613,7 +590,7 @@ StreamLoop:
 				break
 			}
 
-			p := &consul.KVPair{Key: fmt.Sprintf("%s/%s", consulPath, bytePostionIdentifier), Value: []byte(statsJSON)}
+			p := &consul.KVPair{Key: fmt.Sprintf("%s/%s", *consulPath, consulStatsKey), Value: []byte(statsJSON)}
 
 			_, err = kv.Put(p, nil)
 
@@ -629,12 +606,20 @@ StreamLoop:
 		}
 	}
 
-	log.Warn(fmt.Sprintf("Loop finished for alloc: %s Task: %s, Type: %s", allocation.ID, taskName, logType))
+	log.Warn(fmt.Sprintf("Loop finished for alloc: %s Task: %s, Type: %s", alloc.ID, taskName, logType))
+}
+
+func purgeAllocationData(alloc *nomad.Allocation, kv *consul.KV, consulPath *string) error {
+	path := fmt.Sprintf("%s/%s", *consulPath, alloc.ID)
+
+	_, err := kv.Delete(path, nil)
+
+	return err
 }
 
 func allocationCleanup(nomadClient *nomad.Client, kv *consul.KV, consulPath string, maxAge int) {
-	nextTime := time.Now().Truncate(time.Second * 60)
-	nextTime = nextTime.Add(time.Second * 60)
+	nextTime := time.Now().Truncate(time.Hour * 1)
+	nextTime = nextTime.Add(time.Hour * 1)
 	time.Sleep(time.Until(nextTime))
 
 	pairs, _, err := kv.List(consulPath, nil)
@@ -725,7 +710,7 @@ func buildMetaConfig(meta map[string]string) metaConfig {
 			logFile := logFileConfig{
 				Path:  parts[0],
 				Delim: "\n",
-				Type:  "nomad-log-file",
+				Type:  "allocation-log-file",
 			}
 
 			if len(parts) > 1 {
@@ -749,44 +734,6 @@ func buildMetaConfig(meta map[string]string) metaConfig {
 	}
 
 	return config
-}
-
-func randomRestart(allocationID string, cancelChannels []chan bool) {
-	nextTime := time.Now().Truncate(time.Second * 30)
-	nextTime = nextTime.Add(time.Second * 30)
-	time.Sleep(time.Until(nextTime))
-
-	chance := RandomWeightSelect(1, 100)
-
-	if chance {
-		log.Warn(fmt.Sprintf("Cancelling alloc: %s", allocationID))
-		for _, c := range cancelChannels {
-			c <- true
-		}
-	} else {
-		randomRestart(allocationID, cancelChannels)
-	}
-}
-
-// RandomWeightSelect returns true or false randomly, with weight.
-func RandomWeightSelect(trueWeight int, falseWeight int) bool {
-	rand.Seed(time.Now().UnixNano())
-
-	r := rand.Intn(trueWeight + falseWeight)
-
-	for _, b := range []bool{true, false} {
-		if b == true {
-			r -= trueWeight
-		} else {
-			r -= falseWeight
-		}
-
-		if r <= 0 {
-			return b
-		}
-	}
-
-	return false
 }
 
 func filterCancelChannels(channels []chan bool, channel chan bool) []chan bool {
