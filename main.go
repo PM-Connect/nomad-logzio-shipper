@@ -74,7 +74,11 @@ func main() {
 	flags.BoolVar(&randomisedRestart, "random-restart", false, "Should the streaming of logs be restarted at random intervals. (Mostly for testing.)")
 	flags.StringVar(&queueDir, "queue-dir", ".Queue", "The directory to store logzio messages before sending.")
 
-	flags.Parse(args)
+	err := flags.Parse(args)
+
+	if err != nil {
+		log.Panic(err)
+	}
 
 	args = flags.Args()
 
@@ -176,7 +180,7 @@ Loop:
 
 					var wg sync.WaitGroup
 
-					cancelChannels := []chan bool{}
+					var cancelChannels []chan bool
 					channels := map[string]chan bool{}
 
 					var allocGroup *nomad.TaskGroup
@@ -520,7 +524,7 @@ StreamLoop:
 					log.Debug(fmt.Sprintf("%s %s %s %d", allocation.ID, taskName, logType, bytes))
 
 					logItems := []logItem{
-						logItem{
+						{
 							"message": "",
 						},
 					}
@@ -582,7 +586,11 @@ StreamLoop:
 							break
 						}
 
-						l.Send(msg)
+						err = l.Send(msg)
+
+						if err != nil {
+							log.Error(err)
+						}
 					}
 				}
 			}
@@ -782,7 +790,7 @@ func RandomWeightSelect(trueWeight int, falseWeight int) bool {
 }
 
 func filterCancelChannels(channels []chan bool, channel chan bool) []chan bool {
-	filtered := []chan bool{}
+	var filtered []chan bool
 
 	for _, c := range channels {
 		if channel != c {
