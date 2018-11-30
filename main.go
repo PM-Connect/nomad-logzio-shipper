@@ -379,7 +379,7 @@ func shipLogs(sendLogs bool, logType string, conf metaConfig, taskConf *taskMeta
 
 		stream, errors = allocClient.StreamLog(logType, alloc, taskName, offsetBytes, stopChan)
 
-		itemType = "alloc-" + logType
+		itemType = "nomad-" + logType
 
 		if taskConf != nil && len(taskConf.ErrType) > 0 {
 			itemType = taskConf.ErrType
@@ -402,7 +402,7 @@ func shipLogs(sendLogs bool, logType string, conf metaConfig, taskConf *taskMeta
 
 		stream, errors = allocClient.StreamLog(logType, alloc, taskName, offsetBytes, stopChan)
 
-		itemType = "alloc-" + logType
+		itemType = "nomad-" + logType
 
 		if taskConf != nil && len(taskConf.OutType) > 0 {
 			itemType = taskConf.OutType
