@@ -414,17 +414,18 @@ func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *syn
 	FileExistenceLoop:
 		for err != nil {
 			if strings.Contains(err.Error(), "no such file or directory") {
+				offsetBytes = int64(0)
 				log.Warning(fmt.Sprintf("Find not found, 10s retry: %s %s", alloc.ID, logFile.Path))
 				alloc, allocErr := allocClient.GetAllocationInfo(alloc.ID)
 
 				if allocErr != nil {
 					log.Error("Unable to find alloc: ", allocErr)
-					break FileExistenceLoop
+					break
 				}
 
 				if alloc.ClientStatus != "running" {
 					log.Warning(fmt.Sprintf("Allocation is stopped: %s", alloc.ID))
-					break FileExistenceLoop
+					break
 				}
 
 				time.Sleep(time.Second * 10)
@@ -436,7 +437,7 @@ func shipLogs(logType string, conf metaConfig, taskConf *taskMetaConfig, wg *syn
 					data, err = allocClient.StatFile(alloc, logFile.Path)
 				}
 			} else {
-				break FileExistenceLoop
+				break
 			}
 		}
 
