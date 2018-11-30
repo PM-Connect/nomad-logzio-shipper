@@ -85,6 +85,28 @@ func (a *Client) GetLog(logType string, alloc *nomad.Allocation, taskName string
 	return content
 }
 
+func (a *Client) GetLogSize(logType string, alloc *nomad.Allocation, taskName string, offset int64) int64 {
+	frames, errors := a.NomadClient.AllocFS().Logs(alloc, false, taskName, logType, "start", offset, nil, nil)
+
+	reader := nomad.NewFrameReader(frames, errors, nil)
+
+	size := 0
+
+	var err error
+	var n int
+
+	n, err = reader.Read([]byte{})
+
+	size = size + n
+
+	for err == nil {
+		n, err = reader.Read([]byte{})
+		size = size + n
+	}
+
+	return int64(size)
+}
+
 func (a *Client) StreamLog(logType string, alloc *nomad.Allocation, taskName string, offset int64, stopChan <-chan struct{}) (<-chan *nomad.StreamFrame, <-chan error) {
 	stream, errors := a.NomadClient.AllocFS().Logs(alloc, true, taskName, logType, "start", offset, stopChan, nil)
 
