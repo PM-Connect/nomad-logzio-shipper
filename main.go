@@ -7,6 +7,7 @@ import (
 	"github.com/pm-connect/nomad-logzio-shipper/allocation"
 	"os"
 	"regexp"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,7 +50,7 @@ type logFileConfig struct {
 
 func main() {
 	var nomadAddr, nomadClientID, consulAddr, logzToken, logzAddr, consulPath, queueDir string
-	var verbose, noSend bool
+	var verbose, noSend, profile bool
 	var maxAge int
 
 	args := os.Args[1:]
@@ -62,6 +63,7 @@ func main() {
 	flags.StringVar(&logzAddr, "logz-addr", "https://listener-eu.logz.io:8071", "The logz.io endpoint.")
 	flags.BoolVar(&verbose, "verbose", false, "Enable verbose logging.")
 	flags.BoolVar(&noSend, "no-send", false, "Do not ship any logs, dry run.")
+	flags.BoolVar(&profile, "profile", false, "Profile the cpu usage.")
 	flags.IntVar(&maxAge, "max-age", 7, "Set the maximum age in days for allocation log state to be stored in consul for.")
 	flags.StringVar(&consulPath, "consul-path", "logzio-nomad", "The KV path in consul to store allocation log state.")
 	flags.StringVar(&queueDir, "queue-dir", ".Queue", "The directory to store logzio messages before sending.")
@@ -88,6 +90,24 @@ func main() {
 
 	if verbose {
 		log.SetLevel(log.DebugLevel)
+	}
+
+	if profile {
+		f, err := os.Create("profile")
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		err = pprof.StartCPUProfile(f)
+
+		if err != nil {
+			log.Panic(err)
+		}
+
+		go func() {
+			time.Sleep(time.Second * 60)
+			pprof.StopCPUProfile()
+		}()
 	}
 
 	log.Info(fmt.Sprintf("Watching allocations for node: %s", nomadClientID))
@@ -348,6 +368,7 @@ func shipLogs(sendLogs bool, logType string, conf metaConfig, taskConf *taskMeta
 
 	switch logType {
 	case "stderr":
+		log.Info("Calculating stderr size from log data stream.")
 		size := allocClient.GetLogSize(logType, alloc, taskName, offsetBytes)
 
 		if size < offsetBytes || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {
@@ -370,6 +391,7 @@ func shipLogs(sendLogs bool, logType string, conf metaConfig, taskConf *taskMeta
 			delim = taskConf.ErrDelim
 		}
 	case "stdout":
+		log.Info("Calculating stdout size from log data stream.")
 		size := allocClient.GetLogSize(logType, alloc, taskName, offsetBytes)
 
 		if size < offsetBytes || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {

@@ -1,6 +1,7 @@
 package allocation
 
 import (
+	"io"
 	"time"
 
 	nomad "github.com/hashicorp/nomad/api"
@@ -88,19 +89,17 @@ func (a *Client) GetLog(logType string, alloc *nomad.Allocation, taskName string
 func (a *Client) GetLogSize(logType string, alloc *nomad.Allocation, taskName string, offset int64) int64 {
 	frames, errors := a.NomadClient.AllocFS().Logs(alloc, false, taskName, logType, "start", offset, nil, nil)
 
-	reader := nomad.NewFrameReader(frames, errors, nil)
-
 	size := 0
 
 	var err error
 	var n int
 
-	n, err = reader.Read([]byte{})
+	n, err = readStreamFrame(frames, errors)
 
 	size = size + n
 
 	for err == nil {
-		n, err = reader.Read([]byte{})
+		n, err = readStreamFrame(frames, errors)
 		size = size + n
 	}
 
@@ -123,4 +122,17 @@ func (a *Client) StreamFile(alloc *nomad.Allocation, path string, offset int64, 
 	stream, errors := a.NomadClient.AllocFS().Stream(alloc, path, "start", offset, stopChan, nil)
 
 	return stream, errors
+}
+
+func readStreamFrame(frames <-chan *nomad.StreamFrame, errs <-chan error) (int, error) {
+	select {
+	case frame, ok := <-frames:
+		if !ok {
+			return 0, io.EOF
+		}
+
+		return len(frame.Data), nil
+	case err := <-errs:
+		return 0, err
+	}
 }
