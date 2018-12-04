@@ -510,11 +510,27 @@ StreamLoop:
 			log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", alloc.ID, taskName, logType))
 			stopChan <- struct{}{}
 			break StreamLoop
-		case data := <-stream:
+		case data, ok := <-stream:
+			if !ok {
+				log.Error(fmt.Sprintf("Not ok when reading from stream: %s Task: %s Type: %s", alloc.ID, taskName, logType))
+
+				for _, c := range cancelChannels {
+					c <- true
+				}
+
+				break StreamLoop
+			}
+
 			var bytes int
 
 			if len(data.FileEvent) > 0 {
-				offsetBytes = 0
+				log.Info(fmt.Sprintf("Resetting offset due to file event (%s): %s Task: %s Type: %s", data.FileEvent, alloc.ID, taskName, logType))
+
+				for _, c := range cancelChannels {
+					c <- true
+				}
+
+				break StreamLoop
 			} else {
 				bytes = len(data.Data)
 
