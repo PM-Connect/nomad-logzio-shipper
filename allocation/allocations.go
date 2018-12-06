@@ -5,6 +5,7 @@ import (
 	"time"
 
 	nomad "github.com/hashicorp/nomad/api"
+	"github.com/pm-connect/nomad-logzio-shipper/utils"
 )
 
 type Client struct {
@@ -16,11 +17,10 @@ const DefaultPollInterval = 10
 const StdErr = "stderr"
 const StdOut = "stdout"
 
-func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]*nomad.Allocation, addedChan chan<- *nomad.Allocation, removedChan chan<- *nomad.Allocation, errChan chan<- error, pollInterval int) {
+func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]*nomad.Allocation,
+	addedChan chan<- *nomad.Allocation, removedChan chan<- *nomad.Allocation, errChan chan<- error, pollInterval int) {
 	if len(*currentAllocations) > 0 {
-		nextTime := time.Now().Truncate(time.Second * time.Duration(pollInterval))
-		nextTime = nextTime.Add(time.Second * time.Duration(pollInterval))
-		time.Sleep(time.Until(nextTime))
+		utils.WaitUntil(time.Second * time.Duration(pollInterval))
 	} else {
 		time.Sleep(time.Second * 1)
 	}

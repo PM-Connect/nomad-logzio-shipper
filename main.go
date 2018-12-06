@@ -2,9 +2,8 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
-	"github.com/pm-connect/nomad-logzio-shipper/allocation"
+	"github.com/pm-connect/nomad-logzio-shipper/setup"
 	"os"
 	"regexp"
 	"runtime/pprof"
@@ -16,10 +15,19 @@ import (
 	consul "github.com/hashicorp/consul/api"
 	nomad "github.com/hashicorp/nomad/api"
 	"github.com/logzio/logzio-go"
+	"github.com/pm-connect/nomad-logzio-shipper/allocation"
+	"github.com/pm-connect/nomad-logzio-shipper/utils"
 	log "github.com/sirupsen/logrus"
 )
 
-type logItem map[string]string
+type logItem struct {
+	Message    string `json:"message"`
+	Type       string `json:"type"`
+	Job        string `json:"job"`
+	Group      string `json:"group"`
+	Task       string `json:"task"`
+	Allocation string `json:"alloc"`
+}
 
 type processStats struct {
 	BytesRead   int64     `json:"bytes"`
@@ -48,51 +56,35 @@ type logFileConfig struct {
 	Type  string
 }
 
+type logShippingConfig struct {
+	SendLogs bool
+	LogType string
+	TaskConf *taskMetaConfig
+	WaitGroup *sync.WaitGroup
+	Allocation *nomad.Allocation
+	TaskName string
+	KVStore *consul.KV
+	AllocationClient *allocation.Client
+	ConsulPath *string
+	StopChan chan struct{}
+	CancelChannels []chan bool
+	CancelChannel chan bool
+	Logzio *logzio.LogzioSender
+	LogFile *logFileConfig
+}
+
 func main() {
-	var nomadAddr, nomadClientID, consulAddr, logzToken, logzAddr, consulPath, queueDir string
-	var verbose, noSend, profile bool
-	var maxAge int
-
-	args := os.Args[1:]
-
-	flags := flag.NewFlagSet("command", flag.ContinueOnError)
-	flags.StringVar(&nomadAddr, "nomad", "http://127.0.0.1:4646", "The allocation address to talk to.")
-	flags.StringVar(&nomadClientID, "node", "", "The ID of the allocation client/node to scrape logs from.")
-	flags.StringVar(&consulAddr, "consul", "127.0.0.1:8500", "The consul address to talk to.")
-	flags.StringVar(&logzToken, "logz-token", "", "Your logz.io token.")
-	flags.StringVar(&logzAddr, "logz-addr", "https://listener-eu.logz.io:8071", "The logz.io endpoint.")
-	flags.BoolVar(&verbose, "verbose", false, "Enable verbose logging.")
-	flags.BoolVar(&noSend, "no-send", false, "Do not ship any logs, dry run.")
-	flags.BoolVar(&profile, "profile", false, "Profile the cpu usage.")
-	flags.IntVar(&maxAge, "max-age", 7, "Set the maximum age in days for allocation log state to be stored in consul for.")
-	flags.StringVar(&consulPath, "consul-path", "logzio-nomad", "The KV path in consul to store allocation log state.")
-	flags.StringVar(&queueDir, "queue-dir", ".Queue", "The directory to store logzio messages before sending.")
-
-	err := flags.Parse(args)
+	config, err := setup.NewConfig()
 
 	if err != nil {
 		log.Panic(err)
 	}
 
-	args = flags.Args()
-
-	if envToken := os.Getenv("LOGZIO_TOKEN"); logzToken == "" && envToken != "" {
-		logzToken = envToken
-	} else if logzToken == "" {
-		log.Fatal("No logzio token was provided as an argument or in the LOGZIO_TOKEN env variable.")
-	}
-
-	if envNomadClientID := os.Getenv("NOMAD_CLIENT_ID"); nomadClientID == "" && envNomadClientID != "" {
-		nomadClientID = envNomadClientID
-	} else if nomadClientID == "" {
-		log.Fatal("No nomad client/node id was provided as an argument or in the NOMAD_CLIENT_ID env variable.")
-	}
-
-	if verbose {
+	if config.Verbose {
 		log.SetLevel(log.DebugLevel)
 	}
 
-	if profile {
+	if config.Profile {
 		f, err := os.Create("profile")
 		if err != nil {
 			log.Fatal(err)
@@ -110,14 +102,14 @@ func main() {
 		}()
 	}
 
-	log.Info(fmt.Sprintf("Watching allocations for node: %s", nomadClientID))
-	log.Info(fmt.Sprintf("Consul Addr: %s Nomad Addr: %s", consulAddr, nomadAddr))
+	log.Info(fmt.Sprintf("Watching allocations for node: %s", config.NomadClientID))
+	log.Info(fmt.Sprintf("Consul Addr: %s Nomad Addr: %s", config.ConsulAddr, config.NomadAddr))
 
-	config := nomad.Config{
-		Address: nomadAddr,
+	nomadConfig := nomad.Config{
+		Address: config.NomadAddr,
 	}
 
-	client, err := nomad.NewClient(&config)
+	client, err := nomad.NewClient(&nomadConfig)
 
 	if err != nil {
 		log.Panic(err)
@@ -125,7 +117,7 @@ func main() {
 
 	consulConfig := consul.DefaultConfig()
 
-	consulConfig.Address = consulAddr
+	consulConfig.Address = config.ConsulAddr
 
 	consulClient, err := consul.NewClient(consulConfig)
 
@@ -137,7 +129,7 @@ func main() {
 
 	var debugFunc logzio.SenderOptionFunc
 
-	if verbose {
+	if config.Verbose {
 		debugFunc = logzio.SetDebug(os.Stdout)
 	} else {
 		debugFunc = func(l *logzio.LogzioSender) error {
@@ -146,10 +138,10 @@ func main() {
 	}
 
 	l, err := logzio.New(
-		logzToken,
-		logzio.SetUrl(logzAddr),
+		config.LogzIOToken,
+		logzio.SetUrl(config.LogzIOAddr),
 		logzio.SetDrainDuration(time.Millisecond*500),
-		logzio.SetTempDirectory(queueDir),
+		logzio.SetTempDirectory(config.QueueDir),
 		logzio.SetDrainDiskThreshold(90),
 		debugFunc,
 	)
@@ -168,8 +160,15 @@ func main() {
 		NomadClient: client,
 	}
 
-	go allocationClient.SyncAllocations(&nomadClientID, &currentAllocations, addAllocation, removeAllocation, allocationSyncErrors, allocation.DefaultPollInterval)
-	go allocationCleanup(client, kv, consulPath, maxAge)
+	go allocationClient.SyncAllocations(
+		&config.NomadClientID,
+		&currentAllocations,
+		addAllocation,
+		removeAllocation,
+		allocationSyncErrors,
+		allocation.DefaultPollInterval,
+	)
+	go allocationCleanup(client, kv, &config.ConsulPath, &config.MaxAge)
 
 	exit := make(chan string)
 
@@ -188,7 +187,7 @@ Loop:
 				cancelChan <- true
 			}
 
-			err := purgeAllocationData(alloc, kv, &consulPath)
+			err := purgeAllocationData(alloc, kv, &config.ConsulPath)
 
 			if err != nil {
 				log.Error(err)
@@ -242,6 +241,8 @@ Loop:
 					channels["file_"+strconv.Itoa(i)] = c
 				}
 
+				var loggingConfigurations []logShippingConfig
+
 			GroupShipLoop:
 				for _, group := range alloc.Job.TaskGroups {
 					if *group.Name == alloc.TaskGroup {
@@ -251,13 +252,45 @@ Loop:
 							if taskConfig.ErrEnabled {
 								wg.Add(1)
 								stopStderr := make(chan struct{})
-								go shipLogs(!noSend, allocation.StdErr, conf, &taskConfig, &wg, alloc, task.Name, kv, &allocationClient, &consulPath, stopStderr, filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]), channels[task.Name+"_stderr"], l, nil)
+
+								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
+									SendLogs: !config.NoSend,
+									LogType: allocation.StdErr,
+									TaskConf: &taskConfig,
+									WaitGroup: &wg,
+									Allocation: alloc,
+									TaskName: task.Name,
+									KVStore: kv,
+									AllocationClient: &allocationClient,
+									ConsulPath: &config.ConsulPath,
+									StopChan: stopStderr,
+									CancelChannels: filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]),
+									CancelChannel: channels[task.Name+"_stderr"],
+									Logzio: l,
+									LogFile: nil,
+								})
 							}
 
 							if taskConfig.OutEnabled {
 								wg.Add(1)
 								stopStdout := make(chan struct{})
-								go shipLogs(!noSend, allocation.StdOut, conf, &taskConfig, &wg, alloc, task.Name, kv, &allocationClient, &consulPath, stopStdout, filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]), channels[task.Name+"_stdout"], l, nil)
+
+								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
+									SendLogs: !config.NoSend,
+									LogType: allocation.StdOut,
+									TaskConf: &taskConfig,
+									WaitGroup: &wg,
+									Allocation: alloc,
+									TaskName: task.Name,
+									KVStore: kv,
+									AllocationClient: &allocationClient,
+									ConsulPath: &config.ConsulPath,
+									StopChan: stopStdout,
+									CancelChannels: filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]),
+									CancelChannel: channels[task.Name+"_stdout"],
+									Logzio: l,
+									LogFile: nil,
+								})
 							}
 						}
 
@@ -269,7 +302,28 @@ Loop:
 					wg.Add(1)
 					stop := make(chan struct{})
 					c := channels["file_"+strconv.Itoa(i)]
-					go shipLogs(!noSend, "file", conf, nil, &wg, alloc, "leader", kv, &allocationClient, &consulPath, stop, filterCancelChannels(cancelChannels, c), c, l, &conf.LogFiles[i])
+
+					loggingConfigurations = append(loggingConfigurations, logShippingConfig{
+						SendLogs: !config.NoSend,
+						LogType: "file",
+						TaskConf: nil,
+						WaitGroup: &wg,
+						Allocation: alloc,
+						TaskName: "leader",
+						KVStore: kv,
+						AllocationClient: &allocationClient,
+						ConsulPath: &config.ConsulPath,
+						StopChan: stop,
+						CancelChannels: filterCancelChannels(cancelChannels, c),
+						CancelChannel: c,
+						Logzio: l,
+						LogFile: &conf.LogFiles[i],
+					})
+				}
+
+				for _, loggingConfiguration := range loggingConfigurations {
+					wg.Add(1)
+					go shipLogs(loggingConfiguration)
 				}
 
 				log.Debug(fmt.Sprintf("Waiting on WaitGroup for alloc: %s", alloc.ID))
@@ -278,9 +332,7 @@ Loop:
 				for {
 					select {
 					case <-cancellationChan:
-						for _, c := range cancelChannels {
-							c <- true
-						}
+						triggerCancel(cancelChannels)
 						break StopLoop
 					}
 				}
@@ -295,48 +347,47 @@ Loop:
 	}
 }
 
-func shipLogs(sendLogs bool, logType string, conf metaConfig, taskConf *taskMetaConfig, wg *sync.WaitGroup, alloc *nomad.Allocation, taskName string, kv *consul.KV, allocClient *allocation.Client, consulPath *string, stopChan chan struct{}, cancelChannels []chan bool, cancel chan bool, l *logzio.LogzioSender, logFile *logFileConfig) {
-	defer wg.Done()
+func shipLogs(conf logShippingConfig) {
+	defer conf.WaitGroup.Done()
 
-	alloc, err := allocClient.GetAllocationInfo(alloc.ID)
+	alloc, err := conf.AllocationClient.GetAllocationInfo(conf.Allocation.ID)
 
 	if err != nil {
 		log.Error(fmt.Sprintf("Error fetching alloc: %s [%s]", alloc.ID, err))
-		for _, c := range cancelChannels {
-			c <- true
-		}
+		triggerCancel(conf.CancelChannels)
 		return
 	}
 
 	if alloc.ClientStatus != "running" {
 		log.Error(fmt.Sprintf("Allocation not running: %s", alloc.ID))
-		for _, c := range cancelChannels {
-			c <- true
-		}
+		triggerCancel(conf.CancelChannels)
 		return
 	}
 
-	if logFile != nil {
-		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s %s", alloc.ID, taskName, logType, logFile.Path))
+	if conf.LogFile != nil {
+		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s %s", alloc.ID, conf.TaskName, conf.LogType, conf.LogFile.Path))
 	} else {
-		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s", alloc.ID, taskName, logType))
+		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s", alloc.ID, conf.TaskName, conf.LogType))
 	}
 
 	var consulStatsKey string
 
-	if logFile == nil {
-		consulStatsKey = fmt.Sprintf("%s/%s/%s", alloc.ID, taskName, logType)
+	if conf.LogFile == nil {
+		consulStatsKey = fmt.Sprintf("%s/%s/%s", alloc.ID, conf.TaskName, conf.LogType)
 	} else {
-		consulStatsKey = fmt.Sprintf("%s/_files_/%s/%s", alloc.ID, logType, strings.Replace(logFile.Path, "/", "-", -1))
+		consulStatsKey = fmt.Sprintf(
+			"%s/_files_/%s/%s",
+			alloc.ID,
+			conf.LogType,
+			strings.Replace(conf.LogFile.Path, "/", "-", -1),
+		)
 	}
 
-	pair, _, err := kv.Get(fmt.Sprintf("%s/%s", *consulPath, consulStatsKey), nil)
+	pair, _, err := conf.KVStore.Get(fmt.Sprintf("%s/%s", *conf.ConsulPath, consulStatsKey), nil)
 
 	if err != nil {
 		log.Error("Error fetching consul log shipping stats: ", err)
-		for _, c := range cancelChannels {
-			c <- true
-		}
+		triggerCancel(conf.CancelChannels)
 		return
 	}
 
@@ -349,9 +400,7 @@ func shipLogs(sendLogs bool, logType string, conf metaConfig, taskConf *taskMeta
 
 		if err != nil {
 			log.Error(fmt.Sprintf("Error converting consul data to struct for alloc %s: ", alloc.ID), err)
-			for _, c := range cancelChannels {
-				c <- true
-			}
+			triggerCancel(conf.CancelChannels)
 			return
 		}
 
@@ -366,73 +415,25 @@ func shipLogs(sendLogs bool, logType string, conf metaConfig, taskConf *taskMeta
 	var errors <-chan error
 	var itemType, delim string
 
-	switch logType {
-	case "stderr":
-		log.Info("Calculating stderr size from log data stream.")
-		size := allocClient.GetLogSize(logType, alloc, taskName, offsetBytes)
-
-		if size < offsetBytes || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {
-			offsetBytes = 0
-		} else {
-			offsetBytes = size
-		}
-
-		stream, errors = allocClient.StreamLog(logType, alloc, taskName, offsetBytes, stopChan)
-
-		itemType = "nomad-" + logType
-
-		if taskConf != nil && len(taskConf.ErrType) > 0 {
-			itemType = taskConf.ErrType
-		}
-
-		delim = "\n"
-
-		if taskConf != nil && len(taskConf.ErrDelim) > 0 {
-			delim = taskConf.ErrDelim
-		}
-	case "stdout":
-		log.Info("Calculating stdout size from log data stream.")
-		size := allocClient.GetLogSize(logType, alloc, taskName, offsetBytes)
-
-		if size < offsetBytes || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {
-			offsetBytes = 0
-		} else {
-			offsetBytes = size
-		}
-
-		stream, errors = allocClient.StreamLog(logType, alloc, taskName, offsetBytes, stopChan)
-
-		itemType = "nomad-" + logType
-
-		if taskConf != nil && len(taskConf.OutType) > 0 {
-			itemType = taskConf.OutType
-		}
-
-		delim = "\n"
-
-		if taskConf != nil && len(taskConf.OutDelim) > 0 {
-			delim = taskConf.OutDelim
-		}
+	switch conf.LogType {
 	case "file":
-		if logFile == nil {
+		if conf.LogFile == nil {
 			log.Error("Attempted to log file with nil logFileConfig.")
-			for _, c := range cancelChannels {
-				c <- true
-			}
+			triggerCancel(conf.CancelChannels)
 			return
 		}
 
 		fileNotInitiallyFound := false
 
-		data, err := allocClient.StatFile(alloc, logFile.Path)
+		data, err := conf.AllocationClient.StatFile(alloc, conf.LogFile.Path)
 
 	FileExistenceLoop:
 		for err != nil {
 			if strings.Contains(err.Error(), "no such file or directory") {
 				fileNotInitiallyFound = true
 				offsetBytes = int64(0)
-				log.Warning(fmt.Sprintf("Find not found, 10s retry: %s %s", alloc.ID, logFile.Path))
-				alloc, allocErr := allocClient.GetAllocationInfo(alloc.ID)
+				log.Warning(fmt.Sprintf("Find not found, 10s retry: %s %s", alloc.ID, conf.LogFile.Path))
+				alloc, allocErr := conf.AllocationClient.GetAllocationInfo(alloc.ID)
 
 				if allocErr != nil {
 					log.Error("Unable to find alloc: ", allocErr)
@@ -446,11 +447,18 @@ func shipLogs(sendLogs bool, logType string, conf metaConfig, taskConf *taskMeta
 
 				time.Sleep(time.Second * 10)
 				select {
-				case <-cancel:
-					log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", alloc.ID, taskName, logType))
+				case <-conf.CancelChannel:
+					log.Warn(
+						fmt.Sprintf(
+							"Received cancel for alloc: %s Task: %s Type: %s",
+							alloc.ID,
+							conf.TaskName,
+							conf.LogType,
+						),
+					)
 					break FileExistenceLoop
 				default:
-					data, err = allocClient.StatFile(alloc, logFile.Path)
+					data, err = conf.AllocationClient.StatFile(alloc, conf.LogFile.Path)
 				}
 			} else {
 				break
@@ -459,9 +467,7 @@ func shipLogs(sendLogs bool, logType string, conf metaConfig, taskConf *taskMeta
 
 		if err != nil {
 			log.Error("Error calculating file size: ", err)
-			for _, c := range cancelChannels {
-				c <- true
-			}
+			triggerCancel(conf.CancelChannels)
 			return
 		}
 
@@ -471,20 +477,51 @@ func shipLogs(sendLogs bool, logType string, conf metaConfig, taskConf *taskMeta
 			offsetBytes = int64(data.Size)
 		}
 
-		stream, errors = allocClient.StreamFile(alloc, logFile.Path, offsetBytes, stopChan)
+		stream, errors = conf.AllocationClient.StreamFile(alloc, conf.LogFile.Path, offsetBytes, conf.StopChan)
 
-		if len(logFile.Type) == 0 {
+		if len(conf.LogFile.Type) == 0 {
 			log.Error("Log file type must be set.")
-			for _, c := range cancelChannels {
-				c <- true
-			}
+			triggerCancel(conf.CancelChannels)
 			return
 		}
 
-		itemType = logFile.Type
+		itemType = conf.LogFile.Type
 
-		if len(logFile.Delim) > 0 {
-			delim = logFile.Delim
+		if len(conf.LogFile.Delim) > 0 {
+			delim = conf.LogFile.Delim
+		}
+	case "stderr", "stdout":
+		log.Info("Calculating size from log data stream.")
+		size := conf.AllocationClient.GetLogSize(conf.LogType, alloc, conf.TaskName, 0)
+
+		if size < offsetBytes || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {
+			offsetBytes = 0
+		} else {
+			offsetBytes = size
+		}
+
+		stream, errors = conf.AllocationClient.StreamLog(conf.LogType, alloc, conf.TaskName, offsetBytes, conf.StopChan)
+
+		itemType = "nomad-" + conf.LogType
+
+		if conf.TaskConf != nil && ((len(conf.TaskConf.ErrType) > 0 && conf.LogType == "stderr") || (len(conf.TaskConf.OutType) > 0 && conf.LogType == "stdout")) {
+			switch conf.LogType {
+			case "stderr":
+				itemType = conf.TaskConf.ErrType
+			case "stdout":
+				itemType = conf.TaskConf.OutType
+			}
+		}
+
+		delim = "\n"
+
+		if conf.TaskConf != nil && ((len(conf.TaskConf.ErrDelim) > 0 && conf.LogType == "stderr") || (len(conf.TaskConf.OutDelim) > 0 && conf.LogType == "stdout")) {
+			switch conf.LogType {
+			case "stderr":
+				delim = conf.TaskConf.ErrDelim
+			case "stdout":
+				delim = conf.TaskConf.OutDelim
+			}
 		}
 	default:
 		log.Error("Invalid log type provided.")
@@ -501,22 +538,32 @@ StreamLoop:
 				log.Error("Error while streaming: ", err)
 			}
 
-			for _, c := range cancelChannels {
-				c <- true
-			}
+			triggerCancel(conf.CancelChannels)
 
 			break StreamLoop
-		case <-cancel:
-			log.Warn(fmt.Sprintf("Received cancel for alloc: %s Task: %s Type: %s", alloc.ID, taskName, logType))
-			stopChan <- struct{}{}
+		case <-conf.CancelChannel:
+			log.Warn(
+				fmt.Sprintf(
+					"Received cancel for alloc: %s Task: %s Type: %s",
+					alloc.ID,
+					conf.TaskName,
+					conf.LogType,
+				),
+			)
+			conf.StopChan <- struct{}{}
 			break StreamLoop
 		case data, ok := <-stream:
 			if !ok {
-				log.Error(fmt.Sprintf("Not ok when reading from stream: %s Task: %s Type: %s", alloc.ID, taskName, logType))
+				log.Error(
+					fmt.Sprintf(
+						"Not ok when reading from stream: %s Task: %s Type: %s",
+						alloc.ID,
+						conf.TaskName,
+						conf.LogType,
+					),
+				)
 
-				for _, c := range cancelChannels {
-					c <- true
-				}
+				triggerCancel(conf.CancelChannels)
 
 				break StreamLoop
 			}
@@ -524,11 +571,17 @@ StreamLoop:
 			var bytes int
 
 			if len(data.FileEvent) > 0 {
-				log.Info(fmt.Sprintf("Resetting offset due to file event (%s): %s Task: %s Type: %s", data.FileEvent, alloc.ID, taskName, logType))
+				log.Info(
+					fmt.Sprintf(
+						"Resetting offset due to file event (%s): %s Task: %s Type: %s",
+						data.FileEvent,
+						alloc.ID,
+						conf.TaskName,
+						conf.LogType,
+					),
+				)
 
-				for _, c := range cancelChannels {
-					c <- true
-				}
+				triggerCancel(conf.CancelChannels)
 
 				break StreamLoop
 			} else {
@@ -537,15 +590,13 @@ StreamLoop:
 				if offsetBytes > 0 && pair != nil {
 					value := string(data.Data)
 
-					logItems := []logItem{{"message": ""}}
+					logItems := []logItem{{Message: ""}}
 
 					reg, err := regexp.Compile(delim)
 
 					if err != nil {
 						log.Error("Error compiling regex: ", err)
-						for _, c := range cancelChannels {
-							c <- true
-						}
+						triggerCancel(conf.CancelChannels)
 						break
 					}
 
@@ -554,52 +605,38 @@ StreamLoop:
 							continue
 						}
 
-						if reg.MatchString(line) || delim == "\n" {
-							if _, ok := logItems[len(logItems)-1]["message"]; ok && len(logItems[len(logItems)-1]["message"]) > 0 {
-								logItems = append(logItems, logItem{
-									"message": line,
-								})
-							} else {
-								if len(logItems[len(logItems)-1]["message"]) > 0 {
-									logItems[len(logItems)-1]["message"] = logItems[len(logItems)-1]["message"] + "\n" + line
-								} else {
-									logItems[len(logItems)-1]["message"] = line
-								}
-							}
+						if (reg.MatchString(line) || delim == "\n") && len(logItems[len(logItems)-1].Message) > 0 {
+							logItems = append(logItems, logItem{
+								Message: line,
+							})
 						} else {
-							if len(logItems[len(logItems)-1]["message"]) > 0 {
-								logItems[len(logItems)-1]["message"] = logItems[len(logItems)-1]["message"] + "\n" + line
+							if len(logItems[len(logItems)-1].Message) > 0 {
+								logItems[len(logItems)-1].Message = logItems[len(logItems)-1].Message + "\n" + line
 							} else {
-								logItems[len(logItems)-1]["message"] = line
+								logItems[len(logItems)-1].Message = line
 							}
 						}
 					}
 
 					for _, item := range logItems {
-						if len(conf.MapJobNameToProperty) > 0 && item[conf.MapJobNameToProperty] != alloc.JobID {
-							item[conf.MapJobNameToProperty] = alloc.JobID
-						}
-
-						item["type"] = itemType
-						item["allocation"] = alloc.ID
-						item["job"] = alloc.JobID
-						item["group"] = alloc.TaskGroup
-						item["task"] = taskName
+						item.Type = itemType
+						item.Allocation = alloc.ID
+						item.Job = alloc.JobID
+						item.Group = alloc.TaskGroup
+						item.Task = conf.TaskName
 
 						msg, err := json.Marshal(item)
 
 						if err != nil {
 							log.Error(err)
-							for _, c := range cancelChannels {
-								c <- true
-							}
+							triggerCancel(conf.CancelChannels)
 							break
 						}
 
 						log.Debug("Sending message.", bytes)
 
-						if sendLogs {
-							err = l.Send(msg)
+						if conf.SendLogs {
+							err = conf.Logzio.Send(msg)
 
 							if err != nil {
 								log.Error(err)
@@ -620,21 +657,17 @@ StreamLoop:
 			statsJSON, err := json.Marshal(stats)
 
 			if err != nil {
-				for _, c := range cancelChannels {
-					c <- true
-				}
+				triggerCancel(conf.CancelChannels)
 				log.Error(err)
 				break
 			}
 
-			p := &consul.KVPair{Key: fmt.Sprintf("%s/%s", *consulPath, consulStatsKey), Value: []byte(statsJSON)}
+			p := &consul.KVPair{Key: fmt.Sprintf("%s/%s", *conf.ConsulPath, consulStatsKey), Value: []byte(statsJSON)}
 
-			_, err = kv.Put(p, nil)
+			_, err = conf.KVStore.Put(p, nil)
 
 			if err != nil {
-				for _, c := range cancelChannels {
-					c <- true
-				}
+				triggerCancel(conf.CancelChannels)
 				log.Error("Error saving log shipping stats to consul: ", err)
 				break
 			}
@@ -643,7 +676,7 @@ StreamLoop:
 		}
 	}
 
-	log.Warn(fmt.Sprintf("Loop finished for alloc: %s Task: %s, Type: %s", alloc.ID, taskName, logType))
+	log.Warn(fmt.Sprintf("Loop finished for alloc: %s Task: %s, Type: %s", alloc.ID, conf.TaskName, conf.LogType))
 }
 
 func purgeAllocationData(alloc *nomad.Allocation, kv *consul.KV, consulPath *string) error {
@@ -654,16 +687,15 @@ func purgeAllocationData(alloc *nomad.Allocation, kv *consul.KV, consulPath *str
 	return err
 }
 
-func allocationCleanup(nomadClient *nomad.Client, kv *consul.KV, consulPath string, maxAge int) {
-	nextTime := time.Now().Truncate(time.Hour * 1)
-	nextTime = nextTime.Add(time.Hour * 1)
-	time.Sleep(time.Until(nextTime))
+func allocationCleanup(nomadClient *nomad.Client, kv *consul.KV, consulPath *string, maxAge *int) {
+	utils.WaitUntil(time.Hour * 1)
 
-	pairs, _, err := kv.List(consulPath, nil)
+	pairs, _, err := kv.List(*consulPath, nil)
 
 	if err != nil {
 		log.Error(err)
 		allocationCleanup(nomadClient, kv, consulPath, maxAge)
+		return
 	}
 
 	now := time.Now()
@@ -680,7 +712,7 @@ func allocationCleanup(nomadClient *nomad.Client, kv *consul.KV, consulPath stri
 
 		age := now.Sub(stats.LastSeen).Hours() / 24
 
-		if int(age) >= maxAge {
+		if int(age) >= *maxAge {
 			log.Info(fmt.Sprintf("Deleting Key: %s", pair.Key))
 
 			_, err := kv.Delete(pair.Key, nil)
@@ -771,6 +803,12 @@ func buildMetaConfig(meta map[string]string) metaConfig {
 	}
 
 	return config
+}
+
+func triggerCancel(channels []chan bool) {
+	for _, c := range channels {
+		c <- true
+	}
 }
 
 func filterCancelChannels(channels []chan bool, channel chan bool) []chan bool {
