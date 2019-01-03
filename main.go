@@ -432,7 +432,7 @@ func shipLogs(conf logShippingConfig) {
 			if strings.Contains(err.Error(), "no such file or directory") {
 				fileNotInitiallyFound = true
 				offsetBytes = int64(0)
-				log.Warning(fmt.Sprintf("Find not found, 10s retry: %s %s", alloc.ID, conf.LogFile.Path))
+				log.Warning(fmt.Sprintf("File not found, 10s retry: %s %s %s", alloc.Name, alloc.ID, conf.LogFile.Path))
 				alloc, allocErr := conf.AllocationClient.GetAllocationInfo(alloc.ID)
 
 				if allocErr != nil {
