@@ -427,7 +427,6 @@ func shipLogs(conf logShippingConfig) {
 
 		data, err := conf.AllocationClient.StatFile(alloc, conf.LogFile.Path)
 
-	FileExistenceLoop:
 		for err != nil {
 			if strings.Contains(err.Error(), "no such file or directory") {
 				fileNotInitiallyFound = true
@@ -456,7 +455,8 @@ func shipLogs(conf logShippingConfig) {
 							conf.LogType,
 						),
 					)
-					break FileExistenceLoop
+					log.Warn(fmt.Sprintf("Loop finished for alloc: %s Task: %s, Type: %s", alloc.ID, conf.TaskName, conf.LogType))
+					return
 				default:
 					data, err = conf.AllocationClient.StatFile(alloc, conf.LogFile.Path)
 				}
