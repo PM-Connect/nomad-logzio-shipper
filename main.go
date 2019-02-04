@@ -353,21 +353,30 @@ func shipLogs(conf logShippingConfig) {
 	alloc, err := conf.AllocationClient.GetAllocationInfo(conf.Allocation.ID)
 
 	if err != nil {
-		log.Error(fmt.Sprintf("Error fetching alloc: %s [%s]", alloc.ID, err))
+		log.Error(fmt.Sprintf("[%s] Error fetching alloc: [%s]", alloc.ID, err))
 		triggerCancel(conf.CancelChannels)
 		return
 	}
 
 	if alloc.ClientStatus != "running" {
-		log.Error(fmt.Sprintf("Allocation not running: %s", alloc.ID))
+		log.Error(fmt.Sprintf("[%s] Allocation not running", alloc.ID))
 		triggerCancel(conf.CancelChannels)
 		return
 	}
 
 	if conf.LogFile != nil {
-		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s %s", alloc.ID, conf.TaskName, conf.LogType, conf.LogFile.Path))
+		log.Info(fmt.Sprintf("[%s] Shipping Logs for task \"%s\" type \"%s\" path  \"%s\"", alloc.ID, conf.TaskName, conf.LogType, conf.LogFile.Path))
 	} else {
-		log.Info(fmt.Sprintf("Shipping Logs: %s %s %s", alloc.ID, conf.TaskName, conf.LogType))
+		if conf.TaskConf != nil {
+			switch conf.LogType {
+			case "stderr":
+				log.Info(fmt.Sprintf("[%s] Shipping Logs fortask \"%s\" type \"%s\" to type \"%s\"", alloc.ID, conf.TaskName, conf.LogType, conf.TaskConf.ErrType))
+			case "stdout":
+				log.Info(fmt.Sprintf("[%s] Shipping Logs for task \"%s\" type \"%s\" to type \"%s\"", alloc.ID, conf.TaskName, conf.LogType, conf.TaskConf.OutType))
+			}
+		} else {
+			log.Info(fmt.Sprintf("[%s] Shipping Logs for task \"%s\" type \"%s\"", alloc.ID, conf.TaskName, conf.LogType))
+		}
 	}
 
 	var consulStatsKey string
@@ -386,7 +395,7 @@ func shipLogs(conf logShippingConfig) {
 	pair, _, err := conf.KVStore.Get(fmt.Sprintf("%s/%s", *conf.ConsulPath, consulStatsKey), nil)
 
 	if err != nil {
-		log.Error("Error fetching consul log shipping stats: ", err)
+		log.Errorf("[%s] Error fetching consul log shipping stats: %s", alloc.ID, err)
 		triggerCancel(conf.CancelChannels)
 		return
 	}
@@ -399,7 +408,7 @@ func shipLogs(conf logShippingConfig) {
 		err := json.Unmarshal(pair.Value, &stats)
 
 		if err != nil {
-			log.Error(fmt.Sprintf("Error converting consul data to struct for alloc %s: ", alloc.ID), err)
+			log.Errorf("[%s] Error converting consul data to struct: %s", alloc.ID, err)
 			triggerCancel(conf.CancelChannels)
 			return
 		}
@@ -418,7 +427,7 @@ func shipLogs(conf logShippingConfig) {
 	switch conf.LogType {
 	case "file":
 		if conf.LogFile == nil {
-			log.Error("Attempted to log file with nil logFileConfig.")
+			log.Errorf("[%s] Attempted to log file with nil logFileConfig.", alloc.ID)
 			triggerCancel(conf.CancelChannels)
 			return
 		}
@@ -431,31 +440,29 @@ func shipLogs(conf logShippingConfig) {
 			if strings.Contains(err.Error(), "no such file or directory") {
 				fileNotInitiallyFound = true
 				offsetBytes = int64(0)
-				log.Warning(fmt.Sprintf("File not found, 10s retry: %s %s %s", alloc.Name, alloc.ID, conf.LogFile.Path))
+				log.Warning(fmt.Sprintf("[%s] File not found, 10s retry: %s %s", alloc.ID, alloc.Name, conf.LogFile.Path))
 				alloc, allocErr := conf.AllocationClient.GetAllocationInfo(alloc.ID)
 
 				if allocErr != nil {
-					log.Error("Unable to find alloc: ", allocErr)
+					log.Errorf("[%s] Unable to find alloc: %s", alloc.ID, allocErr)
 					break
 				}
 
 				if alloc.ClientStatus != "running" {
-					log.Warning(fmt.Sprintf("Allocation is stopped: %s", alloc.ID))
+					log.Warningf("[%s] Allocation is stopped", alloc.ID)
 					break
 				}
 
 				time.Sleep(time.Second * 10)
 				select {
 				case <-conf.CancelChannel:
-					log.Warn(
-						fmt.Sprintf(
-							"Received cancel for alloc: %s Task: %s Type: %s",
-							alloc.ID,
-							conf.TaskName,
-							conf.LogType,
-						),
+					log.Warnf(
+						"[%s] Received cancel for Task: %s Type: %s",
+						alloc.ID,
+						conf.TaskName,
+						conf.LogType,
 					)
-					log.Warn(fmt.Sprintf("Loop finished for alloc: %s Task: %s, Type: %s", alloc.ID, conf.TaskName, conf.LogType))
+					log.Warnf("[%s] Loop finished for Task: %s, Type: %s", alloc.ID, conf.TaskName, conf.LogType)
 					return
 				default:
 					data, err = conf.AllocationClient.StatFile(alloc, conf.LogFile.Path)
@@ -466,7 +473,7 @@ func shipLogs(conf logShippingConfig) {
 		}
 
 		if err != nil {
-			log.Error("Error calculating file size: ", err)
+			log.Errorf("[%s] Error calculating file size: %s", alloc.ID, err)
 			triggerCancel(conf.CancelChannels)
 			return
 		}
@@ -480,7 +487,7 @@ func shipLogs(conf logShippingConfig) {
 		stream, errors = conf.AllocationClient.StreamFile(alloc, conf.LogFile.Path, offsetBytes, conf.StopChan)
 
 		if len(conf.LogFile.Type) == 0 {
-			log.Error("Log file type must be set.")
+			log.Errorf("[%s] Log file type must be set.", alloc.ID)
 			triggerCancel(conf.CancelChannels)
 			return
 		}
@@ -491,7 +498,7 @@ func shipLogs(conf logShippingConfig) {
 			delim = conf.LogFile.Delim
 		}
 	case "stderr", "stdout":
-		log.Info("Calculating size from log data stream.")
+		log.Infof("[%s] Calculating size from log data stream.", alloc.ID)
 		size := conf.AllocationClient.GetLogSize(conf.LogType, alloc, conf.TaskName, 0)
 
 		if size < offsetBytes || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {
@@ -524,7 +531,7 @@ func shipLogs(conf logShippingConfig) {
 			}
 		}
 	default:
-		log.Error("Invalid log type provided.")
+		log.Errorf("[%s] Invalid log type provided.", alloc.ID)
 		return
 	}
 
@@ -533,34 +540,30 @@ StreamLoop:
 		select {
 		case err := <-errors:
 			if strings.Contains(err.Error(), "no such file or directory") {
-				log.Warning("Unable to find file: ", err)
+				log.Warningf("[%s] Unable to find file: %s", alloc.ID, err)
 			} else {
-				log.Error("Error while streaming: ", err)
+				log.Errorf("[%s] Error while streaming: %s", alloc.ID, err)
 			}
 
 			triggerCancel(conf.CancelChannels)
 
 			break StreamLoop
 		case <-conf.CancelChannel:
-			log.Warn(
-				fmt.Sprintf(
-					"Received cancel for alloc: %s Task: %s Type: %s",
-					alloc.ID,
-					conf.TaskName,
-					conf.LogType,
-				),
+			log.Warnf(
+				"[%s] Received cancel for Task: %s Type: %s",
+				alloc.ID,
+				conf.TaskName,
+				conf.LogType,
 			)
 			conf.StopChan <- struct{}{}
 			break StreamLoop
 		case data, ok := <-stream:
 			if !ok {
-				log.Error(
-					fmt.Sprintf(
-						"Not ok when reading from stream: %s Task: %s Type: %s",
-						alloc.ID,
-						conf.TaskName,
-						conf.LogType,
-					),
+				log.Errorf(
+					"[%s] Not ok when reading from stream: Task: %s Type: %s",
+					alloc.ID,
+					conf.TaskName,
+					conf.LogType,
 				)
 
 				triggerCancel(conf.CancelChannels)
@@ -571,14 +574,12 @@ StreamLoop:
 			var bytes int
 
 			if len(data.FileEvent) > 0 {
-				log.Info(
-					fmt.Sprintf(
-						"Resetting offset due to file event (%s): %s Task: %s Type: %s",
-						data.FileEvent,
-						alloc.ID,
-						conf.TaskName,
-						conf.LogType,
-					),
+				log.Infof(
+					"[%s] Resetting offset due to file event: %s Task: %s Type: %s",
+					alloc.ID,
+					data.FileEvent,
+					conf.TaskName,
+					conf.LogType,
 				)
 
 				triggerCancel(conf.CancelChannels)
@@ -595,7 +596,7 @@ StreamLoop:
 					reg, err := regexp.Compile(delim)
 
 					if err != nil {
-						log.Error("Error compiling regex: ", err)
+						log.Errorf("[%s] Error compiling regex: %s", alloc.ID, err)
 						triggerCancel(conf.CancelChannels)
 						break
 					}
@@ -633,7 +634,7 @@ StreamLoop:
 							break
 						}
 
-						log.Debug("Sending message.", bytes)
+						log.Debugf("[%s] Sending message.", alloc.ID, bytes)
 
 						if conf.SendLogs {
 							err = conf.Logzio.Send(msg)
@@ -668,7 +669,7 @@ StreamLoop:
 
 			if err != nil {
 				triggerCancel(conf.CancelChannels)
-				log.Error("Error saving log shipping stats to consul: ", err)
+				log.Errorf("[%s] Error saving log shipping stats to consul: %s", alloc.ID, err)
 				break
 			}
 
@@ -676,7 +677,7 @@ StreamLoop:
 		}
 	}
 
-	log.Warn(fmt.Sprintf("Loop finished for alloc: %s Task: %s, Type: %s", alloc.ID, conf.TaskName, conf.LogType))
+	log.Warnf("[%s] Loop finished for Task: %s, Type: %s", alloc.ID, conf.TaskName, conf.LogType)
 }
 
 func purgeAllocationData(alloc *nomad.Allocation, kv *consul.KV, consulPath *string) error {
