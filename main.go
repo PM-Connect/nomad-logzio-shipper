@@ -321,9 +321,9 @@ Loop:
 					})
 				}
 
-				for _, loggingConfiguration := range loggingConfigurations {
+				for i, loggingConfiguration := range loggingConfigurations {
 					wg.Add(1)
-					go shipLogs(loggingConfiguration)
+					go shipLogs(i, loggingConfiguration)
 				}
 
 				log.Debug(fmt.Sprintf("Waiting on WaitGroup for alloc: %s", alloc.ID))
@@ -347,35 +347,35 @@ Loop:
 	}
 }
 
-func shipLogs(conf logShippingConfig) {
+func shipLogs(workerId int, conf logShippingConfig) {
 	defer conf.WaitGroup.Done()
 
 	alloc, err := conf.AllocationClient.GetAllocationInfo(conf.Allocation.ID)
 
 	if err != nil {
-		log.Error(fmt.Sprintf("[%s] Error fetching alloc: [%s]", alloc.ID, err))
+		log.Error(fmt.Sprintf("[%d@%s] Error fetching alloc: [%s]", workerId, alloc.ID, err))
 		triggerCancel(conf.CancelChannels)
 		return
 	}
 
 	if alloc.ClientStatus != "running" {
-		log.Error(fmt.Sprintf("[%s] Allocation not running", alloc.ID))
+		log.Error(fmt.Sprintf("[%d@%s] Allocation not running", workerId, alloc.ID))
 		triggerCancel(conf.CancelChannels)
 		return
 	}
 
 	if conf.LogFile != nil {
-		log.Info(fmt.Sprintf("[%s] Shipping Logs for task \"%s\" type \"%s\" path  \"%s\"", alloc.ID, conf.TaskName, conf.LogType, conf.LogFile.Path))
+		log.Info(fmt.Sprintf("[%d@%s] Shipping Logs for task '%s' type '%s' path  '%s'", workerId, alloc.ID, conf.TaskName, conf.LogType, conf.LogFile.Path))
 	} else {
 		if conf.TaskConf != nil {
 			switch conf.LogType {
 			case "stderr":
-				log.Info(fmt.Sprintf("[%s] Shipping Logs fortask \"%s\" type \"%s\" to type \"%s\"", alloc.ID, conf.TaskName, conf.LogType, conf.TaskConf.ErrType))
+				log.Info(fmt.Sprintf("[%d@%s] Shipping Logs fortask '%s' type '%s' to type '%s'", workerId, alloc.ID, conf.TaskName, conf.LogType, conf.TaskConf.ErrType))
 			case "stdout":
-				log.Info(fmt.Sprintf("[%s] Shipping Logs for task \"%s\" type \"%s\" to type \"%s\"", alloc.ID, conf.TaskName, conf.LogType, conf.TaskConf.OutType))
+				log.Info(fmt.Sprintf("[%d@%s] Shipping Logs for task '%s' type '%s' to type '%s'", workerId, alloc.ID, conf.TaskName, conf.LogType, conf.TaskConf.OutType))
 			}
 		} else {
-			log.Info(fmt.Sprintf("[%s] Shipping Logs for task \"%s\" type \"%s\"", alloc.ID, conf.TaskName, conf.LogType))
+			log.Info(fmt.Sprintf("[%d@%s] Shipping Logs for task '%s' type '%s'", workerId, alloc.ID, conf.TaskName, conf.LogType))
 		}
 	}
 
@@ -395,7 +395,7 @@ func shipLogs(conf logShippingConfig) {
 	pair, _, err := conf.KVStore.Get(fmt.Sprintf("%s/%s", *conf.ConsulPath, consulStatsKey), nil)
 
 	if err != nil {
-		log.Errorf("[%s] Error fetching consul log shipping stats: %s", alloc.ID, err)
+		log.Errorf("[%d@%s] Error fetching consul log shipping stats: %s", workerId, alloc.ID, err)
 		triggerCancel(conf.CancelChannels)
 		return
 	}
@@ -408,7 +408,7 @@ func shipLogs(conf logShippingConfig) {
 		err := json.Unmarshal(pair.Value, &stats)
 
 		if err != nil {
-			log.Errorf("[%s] Error converting consul data to struct: %s", alloc.ID, err)
+			log.Errorf("[%d@%s] Error converting consul data to struct: %s", workerId, alloc.ID, err)
 			triggerCancel(conf.CancelChannels)
 			return
 		}
@@ -427,7 +427,7 @@ func shipLogs(conf logShippingConfig) {
 	switch conf.LogType {
 	case "file":
 		if conf.LogFile == nil {
-			log.Errorf("[%s] Attempted to log file with nil logFileConfig.", alloc.ID)
+			log.Errorf("[%d@%s] Attempted to log file with nil logFileConfig.", alloc.ID)
 			triggerCancel(conf.CancelChannels)
 			return
 		}
@@ -440,16 +440,16 @@ func shipLogs(conf logShippingConfig) {
 			if strings.Contains(err.Error(), "no such file or directory") {
 				fileNotInitiallyFound = true
 				offsetBytes = int64(0)
-				log.Warning(fmt.Sprintf("[%s] File not found, 10s retry: %s %s", alloc.ID, alloc.Name, conf.LogFile.Path))
+				log.Warning(fmt.Sprintf("[%d@%s] File not found, 10s retry: %s %s", workerId, alloc.ID, alloc.Name, conf.LogFile.Path))
 				alloc, allocErr := conf.AllocationClient.GetAllocationInfo(alloc.ID)
 
 				if allocErr != nil {
-					log.Errorf("[%s] Unable to find alloc: %s", alloc.ID, allocErr)
+					log.Errorf("[%d@%s] Unable to find alloc: %s", workerId, alloc.ID, allocErr)
 					break
 				}
 
 				if alloc.ClientStatus != "running" {
-					log.Warningf("[%s] Allocation is stopped", alloc.ID)
+					log.Warningf("[%d@%s] Allocation is stopped", alloc.ID)
 					break
 				}
 
@@ -457,12 +457,12 @@ func shipLogs(conf logShippingConfig) {
 				select {
 				case <-conf.CancelChannel:
 					log.Warnf(
-						"[%s] Received cancel for Task: %s Type: %s",
+						"[%d@%s] Received cancel for Task: %s Type: %s",
 						alloc.ID,
 						conf.TaskName,
 						conf.LogType,
 					)
-					log.Warnf("[%s] Loop finished for Task: %s, Type: %s", alloc.ID, conf.TaskName, conf.LogType)
+					log.Warnf("[%d@%s] Loop finished for Task: %s, Type: %s", workerId, alloc.ID, conf.TaskName, conf.LogType)
 					return
 				default:
 					data, err = conf.AllocationClient.StatFile(alloc, conf.LogFile.Path)
@@ -473,7 +473,7 @@ func shipLogs(conf logShippingConfig) {
 		}
 
 		if err != nil {
-			log.Errorf("[%s] Error calculating file size: %s", alloc.ID, err)
+			log.Errorf("[%d@%s] Error calculating file size: %s", workerId, alloc.ID, err)
 			triggerCancel(conf.CancelChannels)
 			return
 		}
@@ -487,7 +487,7 @@ func shipLogs(conf logShippingConfig) {
 		stream, errors = conf.AllocationClient.StreamFile(alloc, conf.LogFile.Path, offsetBytes, conf.StopChan)
 
 		if len(conf.LogFile.Type) == 0 {
-			log.Errorf("[%s] Log file type must be set.", alloc.ID)
+			log.Errorf("[%d@%s] Log file type must be set.", alloc.ID)
 			triggerCancel(conf.CancelChannels)
 			return
 		}
@@ -498,7 +498,7 @@ func shipLogs(conf logShippingConfig) {
 			delim = conf.LogFile.Delim
 		}
 	case "stderr", "stdout":
-		log.Infof("[%s] Calculating size from log data stream.", alloc.ID)
+		log.Infof("[%d@%s] Calculating size from log data stream.", alloc.ID)
 		size := conf.AllocationClient.GetLogSize(conf.LogType, alloc, conf.TaskName, 0)
 
 		if size < offsetBytes || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {
@@ -531,7 +531,7 @@ func shipLogs(conf logShippingConfig) {
 			}
 		}
 	default:
-		log.Errorf("[%s] Invalid log type provided.", alloc.ID)
+		log.Errorf("[%d@%s] Invalid log type provided.", alloc.ID)
 		return
 	}
 
@@ -540,9 +540,9 @@ StreamLoop:
 		select {
 		case err := <-errors:
 			if strings.Contains(err.Error(), "no such file or directory") {
-				log.Warningf("[%s] Unable to find file: %s", alloc.ID, err)
+				log.Warningf("[%d@%s] Unable to find file: %s", workerId, alloc.ID, err)
 			} else {
-				log.Errorf("[%s] Error while streaming: %s", alloc.ID, err)
+				log.Errorf("[%d@%s] Error while streaming: %s", workerId, alloc.ID, err)
 			}
 
 			triggerCancel(conf.CancelChannels)
@@ -550,7 +550,7 @@ StreamLoop:
 			break StreamLoop
 		case <-conf.CancelChannel:
 			log.Warnf(
-				"[%s] Received cancel for Task: %s Type: %s",
+				"[%d@%s] Received cancel for Task: %s Type: %s",
 				alloc.ID,
 				conf.TaskName,
 				conf.LogType,
@@ -560,7 +560,7 @@ StreamLoop:
 		case data, ok := <-stream:
 			if !ok {
 				log.Errorf(
-					"[%s] Not ok when reading from stream: Task: %s Type: %s",
+					"[%d@%s] Not ok when reading from stream: Task: %s Type: %s",
 					alloc.ID,
 					conf.TaskName,
 					conf.LogType,
@@ -575,7 +575,7 @@ StreamLoop:
 
 			if len(data.FileEvent) > 0 {
 				log.Infof(
-					"[%s] Resetting offset due to file event: %s Task: %s Type: %s",
+					"[%d@%s] Resetting offset due to file event: %s Task: %s Type: %s",
 					alloc.ID,
 					data.FileEvent,
 					conf.TaskName,
@@ -596,7 +596,7 @@ StreamLoop:
 					reg, err := regexp.Compile(delim)
 
 					if err != nil {
-						log.Errorf("[%s] Error compiling regex: %s", alloc.ID, err)
+						log.Errorf("[%d@%s] Error compiling regex: %s", workerId, alloc.ID, err)
 						triggerCancel(conf.CancelChannels)
 						break
 					}
@@ -634,7 +634,7 @@ StreamLoop:
 							break
 						}
 
-						log.Debugf("[%s] Sending message.", alloc.ID, bytes)
+						log.Debugf("[%d@%s] Sending message.", workerId, alloc.ID, bytes)
 
 						if conf.SendLogs {
 							err = conf.Logzio.Send(msg)
@@ -669,7 +669,7 @@ StreamLoop:
 
 			if err != nil {
 				triggerCancel(conf.CancelChannels)
-				log.Errorf("[%s] Error saving log shipping stats to consul: %s", alloc.ID, err)
+				log.Errorf("[%d@%s] Error saving log shipping stats to consul: %s", workerId, alloc.ID, err)
 				break
 			}
 
@@ -677,7 +677,7 @@ StreamLoop:
 		}
 	}
 
-	log.Warnf("[%s] Loop finished for Task: %s, Type: %s", alloc.ID, conf.TaskName, conf.LogType)
+	log.Warnf("[%d@%s] Loop finished for Task: %s, Type: %s", workerId, alloc.ID, conf.TaskName, conf.LogType)
 }
 
 func purgeAllocationData(alloc *nomad.Allocation, kv *consul.KV, consulPath *string) error {
