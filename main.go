@@ -450,7 +450,7 @@ func shipLogs(workerId int, conf logShippingConfig) {
 				}
 
 				if alloc.ClientStatus != "running" {
-					log.Warningf("[%d@%s] Allocation is stopped", workerId, alloc.ID)
+					log.Warningf("[%d@%s] Allocation is %s", workerId, alloc.ID, alloc.ClientStatus)
 					triggerCancel(conf.CancelChannels)
 					return
 				}
