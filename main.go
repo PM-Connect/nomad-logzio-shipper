@@ -57,20 +57,20 @@ type logFileConfig struct {
 }
 
 type logShippingConfig struct {
-	SendLogs bool
-	LogType string
-	TaskConf *taskMetaConfig
-	WaitGroup *sync.WaitGroup
-	Allocation *nomad.Allocation
-	TaskName string
-	KVStore *consul.KV
+	SendLogs         bool
+	LogType          string
+	TaskConf         *taskMetaConfig
+	WaitGroup        *sync.WaitGroup
+	Allocation       *nomad.Allocation
+	TaskName         string
+	KVStore          *consul.KV
 	AllocationClient *allocation.Client
-	ConsulPath *string
-	StopChan chan struct{}
-	CancelChannels []chan bool
-	CancelChannel chan bool
-	Logzio *logzio.LogzioSender
-	LogFile *logFileConfig
+	ConsulPath       *string
+	StopChan         chan struct{}
+	CancelChannels   []chan bool
+	CancelChannel    chan bool
+	Logzio           *logzio.LogzioSender
+	LogFile          *logFileConfig
 }
 
 func main() {
@@ -254,20 +254,20 @@ Loop:
 								stopStderr := make(chan struct{})
 
 								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
-									SendLogs: !config.NoSend,
-									LogType: allocation.StdErr,
-									TaskConf: &taskConfig,
-									WaitGroup: &wg,
-									Allocation: alloc,
-									TaskName: task.Name,
-									KVStore: kv,
+									SendLogs:         !config.NoSend,
+									LogType:          allocation.StdErr,
+									TaskConf:         &taskConfig,
+									WaitGroup:        &wg,
+									Allocation:       alloc,
+									TaskName:         task.Name,
+									KVStore:          kv,
 									AllocationClient: &allocationClient,
-									ConsulPath: &config.ConsulPath,
-									StopChan: stopStderr,
-									CancelChannels: filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]),
-									CancelChannel: channels[task.Name+"_stderr"],
-									Logzio: l,
-									LogFile: nil,
+									ConsulPath:       &config.ConsulPath,
+									StopChan:         stopStderr,
+									CancelChannels:   filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]),
+									CancelChannel:    channels[task.Name+"_stderr"],
+									Logzio:           l,
+									LogFile:          nil,
 								})
 							}
 
@@ -276,20 +276,20 @@ Loop:
 								stopStdout := make(chan struct{})
 
 								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
-									SendLogs: !config.NoSend,
-									LogType: allocation.StdOut,
-									TaskConf: &taskConfig,
-									WaitGroup: &wg,
-									Allocation: alloc,
-									TaskName: task.Name,
-									KVStore: kv,
+									SendLogs:         !config.NoSend,
+									LogType:          allocation.StdOut,
+									TaskConf:         &taskConfig,
+									WaitGroup:        &wg,
+									Allocation:       alloc,
+									TaskName:         task.Name,
+									KVStore:          kv,
 									AllocationClient: &allocationClient,
-									ConsulPath: &config.ConsulPath,
-									StopChan: stopStdout,
-									CancelChannels: filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]),
-									CancelChannel: channels[task.Name+"_stdout"],
-									Logzio: l,
-									LogFile: nil,
+									ConsulPath:       &config.ConsulPath,
+									StopChan:         stopStdout,
+									CancelChannels:   filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]),
+									CancelChannel:    channels[task.Name+"_stdout"],
+									Logzio:           l,
+									LogFile:          nil,
 								})
 							}
 						}
@@ -304,20 +304,20 @@ Loop:
 					c := channels["file_"+strconv.Itoa(i)]
 
 					loggingConfigurations = append(loggingConfigurations, logShippingConfig{
-						SendLogs: !config.NoSend,
-						LogType: "file",
-						TaskConf: nil,
-						WaitGroup: &wg,
-						Allocation: alloc,
-						TaskName: "leader",
-						KVStore: kv,
+						SendLogs:         !config.NoSend,
+						LogType:          "file",
+						TaskConf:         nil,
+						WaitGroup:        &wg,
+						Allocation:       alloc,
+						TaskName:         "leader",
+						KVStore:          kv,
 						AllocationClient: &allocationClient,
-						ConsulPath: &config.ConsulPath,
-						StopChan: stop,
-						CancelChannels: filterCancelChannels(cancelChannels, c),
-						CancelChannel: c,
-						Logzio: l,
-						LogFile: &conf.LogFiles[i],
+						ConsulPath:       &config.ConsulPath,
+						StopChan:         stop,
+						CancelChannels:   filterCancelChannels(cancelChannels, c),
+						CancelChannel:    c,
+						Logzio:           l,
+						LogFile:          &conf.LogFiles[i],
 					})
 				}
 
