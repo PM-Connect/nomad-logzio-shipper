@@ -368,10 +368,9 @@ func shipLogs(workerId int, conf logShippingConfig) {
 		log.Info(fmt.Sprintf("[%d@%s] Shipping Logs for task '%s' type '%s' path  '%s'", workerId, alloc.ID, conf.TaskName, conf.LogType, conf.LogFile.Path))
 	} else {
 		if conf.TaskConf != nil {
-			switch conf.LogType {
-			case "stderr":
-				log.Info(fmt.Sprintf("[%d@%s] Shipping Logs fortask '%s' type '%s' to type '%s'", workerId, alloc.ID, conf.TaskName, conf.LogType, conf.TaskConf.ErrType))
-			case "stdout":
+			if conf.LogType == "stderr" && len(conf.TaskConf.ErrType) > 0 {
+				log.Info(fmt.Sprintf("[%d@%s] Shipping Logs for task '%s' type '%s' to type '%s'", workerId, alloc.ID, conf.TaskName, conf.LogType, conf.TaskConf.ErrType))
+			} else if conf.LogType == "stdout" && len(conf.TaskConf.OutType) > 0 {
 				log.Info(fmt.Sprintf("[%d@%s] Shipping Logs for task '%s' type '%s' to type '%s'", workerId, alloc.ID, conf.TaskName, conf.LogType, conf.TaskConf.OutType))
 			}
 		} else {
