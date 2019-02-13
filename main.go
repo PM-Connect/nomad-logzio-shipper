@@ -445,12 +445,14 @@ func shipLogs(workerId int, conf logShippingConfig) {
 
 				if allocErr != nil {
 					log.Errorf("[%d@%s] Unable to find alloc: %s", workerId, alloc.ID, allocErr)
-					break
+					triggerCancel(conf.CancelChannels)
+					return
 				}
 
 				if alloc.ClientStatus != "running" {
-					log.Warningf("[%d@%s] Allocation is stopped", alloc.ID)
-					break
+					log.Warningf("[%d@%s] Allocation is stopped", workerId, alloc.ID)
+					triggerCancel(conf.CancelChannels)
+					return
 				}
 
 				time.Sleep(time.Second * 10)
@@ -468,7 +470,8 @@ func shipLogs(workerId int, conf logShippingConfig) {
 					data, err = conf.AllocationClient.StatFile(alloc, conf.LogFile.Path)
 				}
 			} else {
-				break
+				triggerCancel(conf.CancelChannels)
+				return
 			}
 		}
 
