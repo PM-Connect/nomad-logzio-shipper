@@ -470,15 +470,10 @@ func shipLogs(workerId int, conf logShippingConfig) {
 					data, err = conf.AllocationClient.StatFile(alloc, conf.LogFile.Path)
 				}
 			} else {
+				log.Errorf("[%d@%s] Error calculating file size: %s", workerId, alloc.ID, err)
 				triggerCancel(conf.CancelChannels)
 				return
 			}
-		}
-
-		if err != nil {
-			log.Errorf("[%d@%s] Error calculating file size: %s", workerId, alloc.ID, err)
-			triggerCancel(conf.CancelChannels)
-			return
 		}
 
 		if data.Size < offsetBytes || fileNotInitiallyFound || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {
