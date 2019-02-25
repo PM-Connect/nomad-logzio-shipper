@@ -480,6 +480,9 @@ func shipLogs(workerId int, conf logShippingConfig) {
 		}
 
 		if data.Size < offsetBytes || fileNotInitiallyFound || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {
+			if data.Size < offsetBytes {
+				log.Errorf("[%d@%s] Offset greater than total available data, got offset %d expected less than or equal to %d.", workerId, alloc.ID, offsetBytes, data.Size)
+			}
 			offsetBytes = 0
 		} else {
 			offsetBytes = int64(data.Size)
@@ -503,6 +506,9 @@ func shipLogs(workerId int, conf logShippingConfig) {
 		size := conf.AllocationClient.GetLogSize(conf.LogType, alloc, conf.TaskName, 0)
 
 		if size < offsetBytes || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {
+			if size < offsetBytes {
+				log.Errorf("[%d@%s] Offset greater than total available data, got offset \"%d\" expected less than or equal to \"%d\"", workerId, alloc.ID, offsetBytes, size)
+			}
 			offsetBytes = 0
 		} else {
 			offsetBytes = size
@@ -610,7 +616,7 @@ StreamLoop:
 					}
 
 					for _, line := range strings.Split(value, "\n") {
-						if len(line) == 0 {
+						if len(strings.TrimSpace(line)) == 0 {
 							continue
 						}
 
@@ -626,6 +632,13 @@ StreamLoop:
 							}
 						}
 					}
+
+					if alloc.ID != conf.Config.SelfAlloc && len(conf.Config.SelfAlloc) > 0 {
+						log.Infof("[%d@%s] Found log items: %d", workerId, alloc.ID, len(logItems))
+					}
+
+					sentBytes := 0
+					sentMessages := 0
 
 					for _, item := range logItems {
 						item.Type = itemType
@@ -643,7 +656,7 @@ StreamLoop:
 						}
 
 						if alloc.ID != conf.Config.SelfAlloc && len(conf.Config.SelfAlloc) > 0 {
-							log.Infof("[%d@%s] Sending message with bytes: %d", workerId, alloc.ID, bytes)
+							log.Infof("[%d@%s] Sending message with bytes: %d", workerId, alloc.ID, len(item.Message))
 						}
 
 						if conf.SendLogs {
@@ -651,16 +664,32 @@ StreamLoop:
 
 							if err != nil {
 								log.Error(err)
+							} else {
+								sentBytes = sentBytes + len(item.Message)
+								sentMessages = sentMessages + 1
 							}
+						} else {
+							sentBytes = sentBytes + len(item.Message)
+							sentMessages = sentMessages + 1
 						}
+					}
+
+					if alloc.ID != conf.Config.SelfAlloc && len(conf.Config.SelfAlloc) > 0 {
+						log.Infof("[%d@%s] Sent %d/%d messages with %d/%d bytes", workerId, alloc.ID, sentMessages, len(logItems), sentBytes, bytes)
 					}
 				}
 			}
 
 			offsetBytes = offsetBytes + int64(bytes)
+			bytesRead = bytesRead + int64(bytes)
+
+			if offsetBytes > bytesRead {
+				log.Warnf("[%d@%s] Detected offset greater than total bytes read, offset %d, bytes read %d. Resetting offset to 0.", workerId, alloc.ID, offsetBytes, bytesRead)
+				offsetBytes = 0
+			}
 
 			stats := processStats{
-				BytesRead:   bytesRead + int64(bytes),
+				BytesRead:   bytesRead,
 				OffsetBytes: offsetBytes,
 				LastSeen:    time.Now(),
 			}
