@@ -71,6 +71,7 @@ type logShippingConfig struct {
 	CancelChannel    chan bool
 	Logzio           *logzio.LogzioSender
 	LogFile          *logFileConfig
+	Config           *setup.Config
 }
 
 func main() {
@@ -268,6 +269,7 @@ Loop:
 									CancelChannel:    channels[task.Name+"_stderr"],
 									Logzio:           l,
 									LogFile:          nil,
+									Config:           config,
 								})
 							}
 
@@ -290,6 +292,7 @@ Loop:
 									CancelChannel:    channels[task.Name+"_stdout"],
 									Logzio:           l,
 									LogFile:          nil,
+									Config:           config,
 								})
 							}
 						}
@@ -318,6 +321,7 @@ Loop:
 						CancelChannel:    c,
 						Logzio:           l,
 						LogFile:          &conf.LogFiles[i],
+						Config:           config,
 					})
 				}
 
@@ -588,7 +592,9 @@ StreamLoop:
 			} else {
 				bytes = len(data.Data)
 
-				log.Infof("[%d@%s] Processing %d bytes", workerId, alloc.ID, bytes)
+				if alloc.ID != conf.Config.SelfAlloc && len(conf.Config.SelfAlloc) > 0 {
+					log.Infof("[%d@%s] Processing %d bytes", workerId, alloc.ID, bytes)
+				}
 
 				if offsetBytes > 0 && pair != nil {
 					value := string(data.Data)
@@ -636,7 +642,9 @@ StreamLoop:
 							break
 						}
 
-						log.Infof("[%d@%s] Sending message.", workerId, alloc.ID, bytes)
+						if alloc.ID != conf.Config.SelfAlloc && len(conf.Config.SelfAlloc) > 0 {
+							log.Infof("[%d@%s] Sending message with bytes: %d", workerId, alloc.ID, bytes)
+						}
 
 						if conf.SendLogs {
 							err = conf.Logzio.Send(msg)

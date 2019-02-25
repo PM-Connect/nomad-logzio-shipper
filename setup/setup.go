@@ -20,6 +20,8 @@ type Config struct {
 	Profile bool
 
 	MaxAge int
+
+	SelfAlloc string
 }
 
 func NewConfig() (*Config, error) {
@@ -39,6 +41,7 @@ func NewConfig() (*Config, error) {
 	flags.IntVar(&config.MaxAge, "max-age", 7, "Set the maximum age in days for allocation log state to be stored in consul for.")
 	flags.StringVar(&config.ConsulPath, "consul-path", "logzio-nomad", "The KV path in consul to store allocation log state.")
 	flags.StringVar(&config.QueueDir, "queue-dir", ".Queue", "The directory to store logzio messages before sending.")
+	flags.StringVar(&config.SelfAlloc, "self-alloc", "", "The alloc id for the current job in nomad.")
 
 	err := flags.Parse(args)
 
