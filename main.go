@@ -444,7 +444,6 @@ func shipLogs(workerId int, conf logShippingConfig) {
 		for err != nil {
 			if strings.Contains(err.Error(), "no such file or directory") {
 				fileNotInitiallyFound = true
-				offsetBytes = int64(0)
 				log.Warningf("[%d:%s@%s] File not found, 10s retry: %s %s", workerId, conf.LogType, alloc.ID, alloc.Name, conf.LogFile.Path)
 				alloc, allocErr := conf.AllocationClient.GetAllocationInfo(alloc.ID)
 
@@ -483,10 +482,10 @@ func shipLogs(workerId int, conf logShippingConfig) {
 		}
 
 		if data.Size < offsetBytes || fileNotInitiallyFound || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {
-			if data.Size < offsetBytes {
+			if data.Size < offsetBytes && !fileNotInitiallyFound {
 				log.Warnf("[%d:%s@%s] Offset greater than total available data, got offset %d expected less than or equal to %d.", workerId, conf.LogType, alloc.ID, offsetBytes, data.Size)
 			}
-			offsetBytes = 0
+			offsetBytes = int64(0)
 		} else {
 			offsetBytes = int64(data.Size)
 		}
@@ -511,10 +510,10 @@ func shipLogs(workerId int, conf logShippingConfig) {
 		size := conf.AllocationClient.GetLogSize(conf.LogType, alloc, conf.TaskName, 0)
 
 		if size < offsetBytes || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {
-			if size < offsetBytes {
+			if size < offsetBytes && time.Since(time.Unix(0, alloc.CreateTime)).Seconds() > allocation.DefaultPollInterval {
 				log.Warnf("[%d:%s@%s] Offset greater than total available data, got offset \"%d\" expected less than or equal to \"%d\"", workerId, conf.LogType, alloc.ID, offsetBytes, size)
 			}
-			offsetBytes = 0
+			offsetBytes = int64(0)
 		} else {
 			offsetBytes = size
 		}
@@ -564,10 +563,11 @@ StreamLoop:
 			break StreamLoop
 		case <-conf.CancelChannel:
 			log.Warnf(
-				"[%d:%s@%s] Received cancel for Task: %s Type: %s",
+				"[%d:%s@%s] Received cancel for Task: %s",
+				workerId,
+				conf.LogType,
 				alloc.ID,
 				conf.TaskName,
-				conf.LogType,
 			)
 			conf.StopChan <- struct{}{}
 			break StreamLoop
@@ -607,7 +607,7 @@ StreamLoop:
 					log.Debugf("[%d:%s@%s] Processing %d bytes", workerId, conf.LogType, alloc.ID, bytes)
 				}
 
-				if offsetBytes > 0 && pair != nil {
+				if offsetBytes > int64(0) && pair != nil {
 					value := string(data.Data)
 
 					logItems := []logItem{{Message: ""}}
@@ -642,8 +642,8 @@ StreamLoop:
 						log.Debugf("[%d:%s@%s] Found log items: %d", workerId, conf.LogType, alloc.ID, len(logItems))
 					}
 
-					sentBytes := 0
-					sentMessages := 0
+					sentBytes := int64(0)
+					sentMessages := int64(0)
 
 					for _, item := range logItems {
 						item.Type = itemType
@@ -670,11 +670,11 @@ StreamLoop:
 							if err != nil {
 								log.Error(err)
 							} else {
-								sentBytes = sentBytes + len(item.Message)
+								sentBytes = sentBytes + int64(len(item.Message))
 								sentMessages = sentMessages + 1
 							}
 						} else {
-							sentBytes = sentBytes + len(item.Message)
+							sentBytes = sentBytes + int64(len(item.Message))
 							sentMessages = sentMessages + 1
 						}
 					}
