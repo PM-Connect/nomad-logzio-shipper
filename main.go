@@ -691,7 +691,7 @@ StreamLoop:
 
 			if offsetBytes > bytesRead {
 				log.Warnf("[%d:%s@%s] Detected offset greater than total bytes read, offset %d, bytes read %d.", workerId, conf.LogType, alloc.ID, offsetBytes, bytesRead)
-				//offsetBytes = bytesRead
+				offsetBytes = bytesRead
 			}
 
 			stats := processStats{
