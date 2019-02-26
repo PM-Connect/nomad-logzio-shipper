@@ -465,11 +465,10 @@ func shipLogs(workerId int, conf logShippingConfig) {
 				case <-conf.CancelChannel:
 					log.Warnf(
 						"[%d:%s@%s] Received cancel for Task: %s",
-						alloc.ID,
 						workerId,
 						conf.LogType,
+						alloc.ID,
 						conf.TaskName,
-						conf.LogType,
 					)
 					log.Warnf("[%d:%s@%s] Loop finished for Task: %s, Type: %s", workerId, conf.LogType, alloc.ID, conf.TaskName, conf.LogType)
 					return
