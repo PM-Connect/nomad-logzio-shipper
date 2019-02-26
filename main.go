@@ -486,7 +486,7 @@ func shipLogs(workerId int, conf logShippingConfig) {
 				log.Warnf("[%d:%s@%s] Offset greater than total available data, got offset %d expected less than or equal to %d.", workerId, conf.LogType, alloc.ID, offsetBytes, data.Size)
 			}
 			offsetBytes = int64(0)
-		} else {
+		} else if offsetBytes == 0 {
 			offsetBytes = int64(data.Size)
 		}
 
@@ -514,7 +514,7 @@ func shipLogs(workerId int, conf logShippingConfig) {
 				log.Warnf("[%d:%s@%s] Offset greater than total available data, got offset \"%d\" expected less than or equal to \"%d\"", workerId, conf.LogType, alloc.ID, offsetBytes, size)
 			}
 			offsetBytes = int64(0)
-		} else {
+		} else if offsetBytes == 0{
 			offsetBytes = size
 		}
 
