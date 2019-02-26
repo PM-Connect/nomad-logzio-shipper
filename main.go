@@ -83,6 +83,8 @@ func main() {
 
 	if config.Verbose {
 		log.SetLevel(log.DebugLevel)
+	} else {
+		log.SetLevel(log.WarnLevel)
 	}
 
 	if config.Profile {
@@ -634,7 +636,7 @@ StreamLoop:
 					}
 
 					if alloc.ID != conf.Config.SelfAlloc && len(conf.Config.SelfAlloc) > 0 {
-						log.Infof("[%d@%s] Found log items: %d", workerId, alloc.ID, len(logItems))
+						log.Debugf("[%d@%s] Found log items: %d", workerId, alloc.ID, len(logItems))
 					}
 
 					sentBytes := 0
@@ -656,7 +658,7 @@ StreamLoop:
 						}
 
 						if alloc.ID != conf.Config.SelfAlloc && len(conf.Config.SelfAlloc) > 0 {
-							log.Infof("[%d@%s] Sending message with bytes: %d", workerId, alloc.ID, len(item.Message))
+							log.Debugf("[%d@%s] Sending message with bytes: %d", workerId, alloc.ID, len(item.Message))
 						}
 
 						if conf.SendLogs {
@@ -675,7 +677,7 @@ StreamLoop:
 					}
 
 					if alloc.ID != conf.Config.SelfAlloc && len(conf.Config.SelfAlloc) > 0 {
-						log.Infof("[%d@%s] Sent %d/%d messages with %d/%d bytes", workerId, alloc.ID, sentMessages, len(logItems), sentBytes, bytes)
+						log.Debugf("[%d@%s] Sent %d/%d messages with %d/%d bytes", workerId, alloc.ID, sentMessages, len(logItems), sentBytes, bytes)
 					}
 				}
 			}
