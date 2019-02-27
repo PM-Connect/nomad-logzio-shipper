@@ -84,7 +84,7 @@ func main() {
 	if config.Verbose {
 		log.SetLevel(log.DebugLevel)
 	} else {
-		log.SetLevel(log.InfoLevel)
+		log.SetLevel(log.WarnLevel)
 	}
 
 	if config.Profile {
