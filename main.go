@@ -61,7 +61,7 @@ type logShippingConfig struct {
 	LogType          string
 	TaskConf         *taskMetaConfig
 	WaitGroup        *sync.WaitGroup
-	Allocation       *nomad.Allocation
+	Allocation       nomad.Allocation
 	TaskName         string
 	KVStore          *consul.KV
 	AllocationClient *allocation.Client
@@ -256,12 +256,14 @@ Loop:
 								wg.Add(1)
 								stopStderr := make(chan struct{})
 
+								useAlloc := *alloc
+
 								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
 									SendLogs:         !config.NoSend,
 									LogType:          allocation.StdErr,
 									TaskConf:         &taskConfig,
 									WaitGroup:        &wg,
-									Allocation:       alloc,
+									Allocation:       useAlloc,
 									TaskName:         task.Name,
 									KVStore:          kv,
 									AllocationClient: &allocationClient,
@@ -279,12 +281,14 @@ Loop:
 								wg.Add(1)
 								stopStdout := make(chan struct{})
 
+								useAlloc := *alloc
+
 								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
 									SendLogs:         !config.NoSend,
 									LogType:          allocation.StdOut,
 									TaskConf:         &taskConfig,
 									WaitGroup:        &wg,
-									Allocation:       alloc,
+									Allocation:       useAlloc,
 									TaskName:         task.Name,
 									KVStore:          kv,
 									AllocationClient: &allocationClient,
@@ -313,7 +317,7 @@ Loop:
 						LogType:          "file",
 						TaskConf:         nil,
 						WaitGroup:        &wg,
-						Allocation:       alloc,
+						Allocation:       *alloc,
 						TaskName:         "leader",
 						KVStore:          kv,
 						AllocationClient: &allocationClient,
