@@ -204,7 +204,9 @@ Loop:
 
 			allocationCancellation[alloc.ID] = cancellationChan
 
-			go func(alloc *nomad.Allocation) {
+			currentAlloc := *alloc
+
+			go func(alloc nomad.Allocation) {
 				var wg sync.WaitGroup
 
 				var cancelChannels []chan bool
@@ -256,14 +258,12 @@ Loop:
 								wg.Add(1)
 								stopStderr := make(chan struct{})
 
-								useAlloc := *alloc
-
 								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
 									SendLogs:         !config.NoSend,
 									LogType:          allocation.StdErr,
 									TaskConf:         &taskConfig,
 									WaitGroup:        &wg,
-									Allocation:       useAlloc,
+									Allocation:       alloc,
 									TaskName:         task.Name,
 									KVStore:          kv,
 									AllocationClient: &allocationClient,
@@ -281,14 +281,12 @@ Loop:
 								wg.Add(1)
 								stopStdout := make(chan struct{})
 
-								useAlloc := *alloc
-
 								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
 									SendLogs:         !config.NoSend,
 									LogType:          allocation.StdOut,
 									TaskConf:         &taskConfig,
 									WaitGroup:        &wg,
-									Allocation:       useAlloc,
+									Allocation:       alloc,
 									TaskName:         task.Name,
 									KVStore:          kv,
 									AllocationClient: &allocationClient,
@@ -312,12 +310,14 @@ Loop:
 					stop := make(chan struct{})
 					c := channels["file_"+strconv.Itoa(i)]
 
+					logFileConf := conf.LogFiles[i]
+
 					loggingConfigurations = append(loggingConfigurations, logShippingConfig{
 						SendLogs:         !config.NoSend,
 						LogType:          "file",
 						TaskConf:         nil,
 						WaitGroup:        &wg,
-						Allocation:       *alloc,
+						Allocation:       alloc,
 						TaskName:         "leader",
 						KVStore:          kv,
 						AllocationClient: &allocationClient,
@@ -326,7 +326,7 @@ Loop:
 						CancelChannels:   filterCancelChannels(cancelChannels, c),
 						CancelChannel:    c,
 						Logzio:           l,
-						LogFile:          &conf.LogFiles[i],
+						LogFile:          &logFileConf,
 						Config:           config,
 					})
 				}
@@ -350,7 +350,7 @@ Loop:
 				wg.Wait()
 
 				log.Warnf("[%s] Finished collection for alloc.", alloc.ID)
-			}(alloc)
+			}(currentAlloc)
 		}
 
 		time.Sleep(time.Millisecond * 100)
@@ -448,7 +448,7 @@ func shipLogs(workerId int, conf logShippingConfig) {
 		for err != nil {
 			if strings.Contains(err.Error(), "no such file or directory") {
 				fileNotInitiallyFound = true
-				log.Warningf("[%d:%s@%s] File not found, 10s retry: %s %s", workerId, conf.LogType, alloc.ID, alloc.Name, conf.LogFile.Path)
+				log.Debugf("[%d:%s@%s] File not found, 10s retry: %s %s", workerId, conf.LogType, alloc.ID, alloc.Name, conf.LogFile.Path)
 				alloc, allocErr := conf.AllocationClient.GetAllocationInfo(alloc.ID)
 
 				if allocErr != nil {
