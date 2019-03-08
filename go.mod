@@ -2,6 +2,7 @@ module github.com/pm-connect/nomad-logzio-shipper
 
 require (
 	contrib.go.opencensus.io/exporter/ocagent v0.4.6 // indirect
+	github.com/Azure/azure-sdk-for-go v26.2.0+incompatible // indirect
 	github.com/Azure/go-autorest v11.5.1+incompatible // indirect
 	github.com/Microsoft/go-winio v0.4.12 // indirect
 	github.com/NYTimes/gziphandler v1.1.1 // indirect
@@ -70,6 +71,7 @@ require (
 	github.com/jonboulle/clockwork v0.1.0 // indirect
 	github.com/json-iterator/go v1.1.5 // indirect
 	github.com/keybase/go-crypto v0.0.0-20181127160227-255a5089e85a // indirect
+	github.com/lithammer/shortuuid v3.0.0+incompatible
 	github.com/logzio/logzio-go v0.0.0-20180701100638-a464ab5b7c32
 	github.com/mattbaird/elastigo v0.0.0-20170123220020-2fe47fd29e4b // indirect
 	github.com/michaelklishin/rabbit-hole v1.5.0 // indirect

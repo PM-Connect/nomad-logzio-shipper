@@ -14,11 +14,11 @@ import (
 
 	consul "github.com/hashicorp/consul/api"
 	nomad "github.com/hashicorp/nomad/api"
+	"github.com/lithammer/shortuuid"
 	"github.com/logzio/logzio-go"
 	"github.com/pm-connect/nomad-logzio-shipper/allocation"
 	"github.com/pm-connect/nomad-logzio-shipper/utils"
 	log "github.com/sirupsen/logrus"
-	"github.com/satori/go.uuid"
 )
 
 type logItem struct {
@@ -336,7 +336,7 @@ Loop:
 
 				for _, loggingConfiguration := range loggingConfigurations {
 					wg.Add(1)
-					id := uuid.NewV4()
+					id := shortuuid.New()
 					log.Infof("[%s@%s] Starting task", id, alloc.ID)
 					go shipLogs(id, loggingConfiguration)
 				}
@@ -362,7 +362,7 @@ Loop:
 	}
 }
 
-func shipLogs(workerId uuid.UUID, conf logShippingConfig) {
+func shipLogs(workerId string, conf logShippingConfig) {
 	defer conf.WaitGroup.Done()
 
 	log.Infof("[%s:%s@%s] Starting worker", workerId, conf.LogType, conf.Allocation.ID)
@@ -693,6 +693,8 @@ StreamLoop:
 					}
 				}
 			}
+
+			log.Infof("[%s:%s@%s] Processed bytes: %d", workerId, conf.LogType, alloc.ID, bytes)
 
 			offsetBytes = offsetBytes + int64(bytes)
 			bytesRead = bytesRead + int64(bytes)
