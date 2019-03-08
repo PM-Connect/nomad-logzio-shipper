@@ -19,6 +19,7 @@ type Config struct {
 	Debug   bool
 	NoSend  bool
 	Profile bool
+	LogzioDebug bool
 
 	MaxAge int
 
@@ -37,7 +38,8 @@ func NewConfig() (*Config, error) {
 	flags.StringVar(&config.LogzIOToken, "logz-token", "", "Your logz.io token.")
 	flags.StringVar(&config.LogzIOAddr, "logz-addr", "https://listener-eu.logz.io:8071", "The logz.io endpoint.")
 	flags.BoolVar(&config.Verbose, "verbose", false, "Enable verbose logging.")
-	flags.BoolVar(&config.Verbose, "debug", false, "Enable debug mode.")
+	flags.BoolVar(&config.Debug, "debug", false, "Enable debug mode.")
+	flags.BoolVar(&config.LogzioDebug, "logzio-debug", false, "Enable debug mode for the logzio sender.")
 	flags.BoolVar(&config.NoSend, "no-send", false, "Do not ship any logs, dry run.")
 	flags.BoolVar(&config.Profile, "profile", false, "Profile the cpu usage.")
 	flags.IntVar(&config.MaxAge, "max-age", 7, "Set the maximum age in days for allocation log state to be stored in consul for.")
