@@ -81,8 +81,10 @@ func main() {
 		log.Panic(err)
 	}
 
-	if config.Verbose {
+	if config.Debug {
 		log.SetLevel(log.DebugLevel)
+	} else if config.Verbose {
+		log.SetLevel(log.InfoLevel)
 	} else {
 		log.SetLevel(log.WarnLevel)
 	}
@@ -336,7 +338,7 @@ Loop:
 					go shipLogs(i, loggingConfiguration)
 				}
 
-				log.Infof("[%s] Waiting on WaitGroup for alloc.", alloc.ID)
+				log.Debugf("[%s] Waiting on WaitGroup for alloc.", alloc.ID)
 
 			StopLoop:
 				for {
@@ -518,7 +520,7 @@ func shipLogs(workerId int, conf logShippingConfig) {
 			offsetBytes = int64(0)
 		}
 
-		log.Infof("[%d:%s@%s] Streaming logs from offset: %d", workerId, conf.LogType, alloc.ID, offsetBytes)
+		log.Debugf("[%d:%s@%s] Streaming logs from offset: %d", workerId, conf.LogType, alloc.ID, offsetBytes)
 
 		stream, errors = conf.AllocationClient.StreamLog(conf.LogType, alloc, conf.TaskName, offsetBytes, conf.StopChan)
 
