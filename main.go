@@ -134,7 +134,7 @@ func main() {
 
 	var debugFunc logzio.SenderOptionFunc
 
-	if config.Verbose {
+	if config.Debug {
 		debugFunc = logzio.SetDebug(os.Stdout)
 	} else {
 		debugFunc = func(l *logzio.LogzioSender) error {
