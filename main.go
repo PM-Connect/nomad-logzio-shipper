@@ -160,7 +160,7 @@ func main() {
 	addAllocation := make(chan *nomad.Allocation)
 	removeAllocation := make(chan *nomad.Allocation)
 	allocationSyncErrors := make(chan error)
-	allocationCancellation := map[string]chan bool{}
+	cancellationChannel := make(chan nomad.Allocation)
 
 	allocationClient := allocation.Client{
 		NomadClient: client,
@@ -187,11 +187,7 @@ Loop:
 		case err := <-allocationSyncErrors:
 			log.Errorf("Error syncing allocations: %s", err)
 		case alloc := <-removeAllocation:
-			cancelChan, ok := allocationCancellation[alloc.ID]
-
-			if ok {
-				cancelChan <- true
-			}
+			cancellationChannel <- *alloc
 
 			err := purgeAllocationData(alloc, kv, &config.ConsulPath)
 
@@ -200,14 +196,12 @@ Loop:
 			}
 
 			log.Infof("[%s] Removed allocation.", alloc.ID)
+		case alloc := <-cancellationChannel:
+			currentAllocations = filterAllocationsExclude(currentAllocations, alloc.ID)
 		case alloc := <-addAllocation:
 			currentAlloc := *alloc
 
 			log.Infof("[%s] Starting for allocation.", currentAlloc.ID)
-
-			cancellationChan := make(chan bool)
-
-			allocationCancellation[currentAlloc.ID] = cancellationChan
 
 			go func(alloc nomad.Allocation) {
 				var wg sync.WaitGroup
@@ -341,20 +335,13 @@ Loop:
 					go shipLogs(id, loggingConfiguration)
 				}
 
-				log.Debugf("[%s] Waiting on WaitGroup for alloc.", alloc.ID)
-
-			StopLoop:
-				for {
-					select {
-					case <-cancellationChan:
-						triggerCancel(cancelChannels)
-						break StopLoop
-					}
-				}
+				log.Infof("[%s] Waiting on WaitGroup for alloc.", alloc.ID)
 
 				wg.Wait()
 
 				log.Warnf("[%s] Finished collection for alloc.", alloc.ID)
+
+				cancellationChannel <- alloc
 			}(currentAlloc)
 		}
 
@@ -597,7 +584,7 @@ StreamLoop:
 			var bytes int
 
 			if len(data.FileEvent) > 0 {
-				log.Infof(
+				log.Warnf(
 					"[%s:%s@%s] Resetting offset due to file event: %s Task: %s Type: %s",
 					workerId,
 					alloc.ID,
@@ -877,4 +864,16 @@ func filterCancelChannels(channels []chan bool, channel chan bool) []chan bool {
 	}
 
 	return filtered
+}
+
+func filterAllocationsExclude(vs []*nomad.Allocation, id string) []*nomad.Allocation {
+	vsf := make([]*nomad.Allocation, 0)
+
+	for _, v := range vs {
+		if v.ID != id {
+			vsf = append(vsf, v)
+		}
+	}
+
+	return vsf
 }
