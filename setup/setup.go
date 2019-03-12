@@ -4,6 +4,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"strconv"
 )
 
 type Config struct {
@@ -24,6 +25,10 @@ type Config struct {
 	MaxAge int
 
 	SelfAlloc string
+
+	StatsdHost string
+	StatsdPort int
+	StatsdPrefix string
 }
 
 func NewConfig() (*Config, error) {
@@ -46,6 +51,9 @@ func NewConfig() (*Config, error) {
 	flags.StringVar(&config.ConsulPath, "consul-path", "logzio-nomad", "The KV path in consul to store allocation log state.")
 	flags.StringVar(&config.QueueDir, "queue-dir", ".Queue", "The directory to store logzio messages before sending.")
 	flags.StringVar(&config.SelfAlloc, "self-alloc", "", "The alloc id for the current job in nomad.")
+	flags.StringVar(&config.StatsdHost, "statsd-host", "", "The host to connect to for statsd metrics.")
+	flags.IntVar(&config.StatsdPort, "statsd-port", 0, "The port to connect to for statsd metrics.")
+	flags.StringVar(&config.StatsdPrefix, "statsd-prefix", "", "Prefix metrics with the given key.")
 
 	err := flags.Parse(args)
 
@@ -65,6 +73,15 @@ func NewConfig() (*Config, error) {
 		config.NomadClientID = envNomadClientID
 	} else if config.NomadClientID == "" {
 		log.Fatal("No nomad client/node id was provided as an argument or in the NOMAD_CLIENT_ID env variable.")
+	}
+
+	if envStatsdHost := os.Getenv("STATSD_HOST"); config.StatsdHost == "" && envStatsdHost != "" {
+		config.StatsdHost = envStatsdHost
+	}
+
+	if envStatsdPort := os.Getenv("STATSD_PORT"); config.StatsdPort == 0 && envStatsdPort != "" {
+		port, _ := strconv.Atoi(envStatsdPort)
+		config.StatsdPort = port
 	}
 
 	return &config, nil
