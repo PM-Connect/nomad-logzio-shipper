@@ -182,6 +182,8 @@ func main() {
 		Value: 1,
 	}
 
+	currentAllocationsMutex := &sync.Mutex{}
+
 	var currentAllocations []*nomad.Allocation
 	addAllocation := make(chan *nomad.Allocation)
 	removeAllocation := make(chan *nomad.Allocation)
@@ -198,6 +200,7 @@ func main() {
 		addAllocation,
 		removeAllocation,
 		allocationSyncErrors,
+		currentAllocationsMutex,
 		allocation.DefaultPollInterval,
 	)
 	go allocationCleanup(client, kv, &config.ConsulPath, &config.MaxAge)
@@ -236,7 +239,9 @@ Loop:
 				Value: 1,
 			}
 		case alloc := <-cancellationChannel:
+			currentAllocationsMutex.Lock()
 			currentAllocations = filterAllocationsExclude(currentAllocations, alloc.ID)
+			currentAllocationsMutex.Unlock()
 			metrics <- Metric{
 				Name: fmt.Sprintf("%slogshipper_allocation_cancellations", config.StatsdPrefix),
 				Value: 1,

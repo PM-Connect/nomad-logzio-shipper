@@ -2,6 +2,7 @@ package allocation
 
 import (
 	"io"
+	"sync"
 	"time"
 
 	nomad "github.com/hashicorp/nomad/api"
@@ -18,10 +19,13 @@ const StdErr = "stderr"
 const StdOut = "stdout"
 
 func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]*nomad.Allocation,
-	addedChan chan<- *nomad.Allocation, removedChan chan<- *nomad.Allocation, errChan chan<- error, pollInterval int) {
+	addedChan chan<- *nomad.Allocation, removedChan chan<- *nomad.Allocation, errChan chan<- error, mutex *sync.Mutex, pollInterval int) {
+	mutex.Lock()
 	if len(*currentAllocations) > 0 {
+		mutex.Unlock()
 		utils.WaitUntil(time.Second * time.Duration(pollInterval))
 	} else {
+		mutex.Unlock()
 		time.Sleep(time.Second * 1)
 	}
 
@@ -36,12 +40,15 @@ func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]*nomad.Al
 			if allocation.ClientStatus == "running" || allocation.ClientStatus == "restarting" {
 				foundAllocations = append(foundAllocations, allocation)
 
+				mutex.Lock()
 				if !allocationInSlice(allocation, *currentAllocations) {
 					addedChan <- allocation
 				}
+				mutex.Unlock()
 			}
 		}
 
+		mutex.Lock()
 		if len(*currentAllocations) > 0 {
 			for _, allocation := range *currentAllocations {
 				if !allocationInSlice(allocation, foundAllocations) {
@@ -51,9 +58,10 @@ func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]*nomad.Al
 		}
 
 		*currentAllocations = foundAllocations
+		mutex.Unlock()
 	}
 
-	a.SyncAllocations(nodeID, currentAllocations, addedChan, removedChan, errChan, pollInterval)
+	a.SyncAllocations(nodeID, currentAllocations, addedChan, removedChan, errChan, mutex, pollInterval)
 }
 
 func (a *Client) GetAllocationsForNode(nodeID *string) ([]*nomad.Allocation, error) {
