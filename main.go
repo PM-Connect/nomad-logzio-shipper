@@ -60,6 +60,7 @@ type logFileConfig struct {
 type logShippingConfig struct {
 	SendLogs         bool
 	LogType          string
+	DisplayName      string
 	TaskConf         *taskMetaConfig
 	WaitGroup        *sync.WaitGroup
 	Allocation       nomad.Allocation
@@ -252,7 +253,6 @@ Loop:
 							taskConfig := buildTaskMetaConfig(task.Meta)
 
 							if taskConfig.ErrEnabled {
-								wg.Add(1)
 								stopStderr := make(chan struct{})
 
 								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
@@ -261,6 +261,7 @@ Loop:
 									TaskConf:         &taskConfig,
 									WaitGroup:        &wg,
 									Allocation:       alloc,
+									DisplayName:      fmt.Sprintf("%s/%s", *group.Name, task.Name),
 									TaskName:         task.Name,
 									KVStore:          kv,
 									AllocationClient: &allocationClient,
@@ -275,7 +276,6 @@ Loop:
 							}
 
 							if taskConfig.OutEnabled {
-								wg.Add(1)
 								stopStdout := make(chan struct{})
 
 								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
@@ -284,6 +284,7 @@ Loop:
 									TaskConf:         &taskConfig,
 									WaitGroup:        &wg,
 									Allocation:       alloc,
+									DisplayName:      fmt.Sprintf("%s/%s", *group.Name, task.Name),
 									TaskName:         task.Name,
 									KVStore:          kv,
 									AllocationClient: &allocationClient,
@@ -303,7 +304,6 @@ Loop:
 				}
 
 				for i := range conf.LogFiles {
-					wg.Add(1)
 					stop := make(chan struct{})
 					c := channels["file_"+strconv.Itoa(i)]
 
@@ -315,6 +315,7 @@ Loop:
 						TaskConf:         nil,
 						WaitGroup:        &wg,
 						Allocation:       alloc,
+						DisplayName:      fmt.Sprintf("%s/%s", alloc.Name, "leader"),
 						TaskName:         "leader",
 						KVStore:          kv,
 						AllocationClient: &allocationClient,
@@ -328,11 +329,18 @@ Loop:
 					})
 				}
 
+				log.Infof("[%s] Creating total of %d workers.", alloc.ID, len(loggingConfigurations))
+
+				wg.Add(len(loggingConfigurations))
+
 				for _, loggingConfiguration := range loggingConfigurations {
-					wg.Add(1)
 					id := shortuuid.New()
-					log.Infof("[%s@%s] Starting task", id, alloc.ID)
-					go shipLogs(id, loggingConfiguration)
+					config := loggingConfiguration
+					log.Infof("[%s:%s@%s] Starting task", id, config.LogType, alloc.ID)
+					go func(conf logShippingConfig) {
+						defer wg.Done()
+						shipLogs(id, config)
+					}(config)
 				}
 
 				log.Infof("[%s] Waiting on WaitGroup for alloc.", alloc.ID)
@@ -350,8 +358,6 @@ Loop:
 }
 
 func shipLogs(workerId string, conf logShippingConfig) {
-	defer conf.WaitGroup.Done()
-
 	log.Infof("[%s:%s@%s] Starting worker", workerId, conf.LogType, conf.Allocation.ID)
 
 	alloc, err := conf.AllocationClient.GetAllocationInfo(conf.Allocation.ID)
@@ -369,18 +375,18 @@ func shipLogs(workerId string, conf logShippingConfig) {
 	}
 
 	if conf.LogFile != nil {
-		log.Infof("[%s:%s@%s] Shipping Logs for task '%s' type '%s' path  '%s'", workerId, conf.LogType, alloc.ID, conf.TaskName, conf.LogType, conf.LogFile.Path)
+		log.Infof("[%s:%s@%s] Shipping Logs for task '%s' type '%s' path  '%s'", workerId, conf.LogType, alloc.ID, conf.DisplayName, conf.LogType, conf.LogFile.Path)
 	} else {
 		if conf.TaskConf != nil {
 			if conf.LogType == "stderr" && len(conf.TaskConf.ErrType) > 0 {
-				log.Infof("[%s:%s@%s] Shipping Logs for task '%s' type '%s' to type '%s'", workerId, conf.LogType, alloc.ID, conf.TaskName, conf.LogType, conf.TaskConf.ErrType)
+				log.Infof("[%s:%s@%s] Shipping Logs for task '%s' type '%s' to type '%s'", workerId, conf.LogType, alloc.ID, conf.DisplayName, conf.LogType, conf.TaskConf.ErrType)
 			} else if conf.LogType == "stdout" && len(conf.TaskConf.OutType) > 0 {
-				log.Infof("[%s:%s@%s] Shipping Logs for task '%s' type '%s' to type '%s'", workerId, conf.LogType, alloc.ID, conf.TaskName, conf.LogType, conf.TaskConf.OutType)
+				log.Infof("[%s:%s@%s] Shipping Logs for task '%s' type '%s' to type '%s'", workerId, conf.LogType, alloc.ID, conf.DisplayName, conf.LogType, conf.TaskConf.OutType)
 			} else {
-				log.Infof("[%s:%s@%s] Shipping Logs for task '%s' type '%s'", workerId, conf.LogType, alloc.ID, conf.TaskName, conf.LogType)
+				log.Infof("[%s:%s@%s] Shipping Logs for task '%s' type '%s'", workerId, conf.LogType, alloc.ID, conf.DisplayName, conf.LogType)
 			}
 		} else {
-			log.Infof("[%s:%s@%s] Shipping Logs for task '%s' type '%s'", workerId, conf.LogType, alloc.ID, conf.TaskName, conf.LogType)
+			log.Infof("[%s:%s@%s] Shipping Logs for task '%s' type '%s'", workerId, conf.LogType, alloc.ID, conf.DisplayName, conf.LogType)
 		}
 	}
 
@@ -467,9 +473,9 @@ func shipLogs(workerId string, conf logShippingConfig) {
 						workerId,
 						conf.LogType,
 						alloc.ID,
-						conf.TaskName,
+						conf.DisplayName,
 					)
-					log.Warnf("[%s:%s@%s] Loop finished for Task: %s, Type: %s", workerId, conf.LogType, alloc.ID, conf.TaskName, conf.LogType)
+					log.Warnf("[%s:%s@%s] Loop finished for Task: %s, Type: %s", workerId, conf.LogType, alloc.ID, conf.DisplayName, conf.LogType)
 					return
 				default:
 					data, err = conf.AllocationClient.StatFile(alloc, conf.LogFile.Path)
@@ -480,6 +486,8 @@ func shipLogs(workerId string, conf logShippingConfig) {
 				return
 			}
 		}
+
+		log.Infof("[%s:%s@%s] Calculated size from log data stream. Got %d", workerId, conf.LogType, alloc.ID, data.Size)
 
 		if data.Size < offsetBytes || fileNotInitiallyFound || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {
 			if data.Size < offsetBytes && !fileNotInitiallyFound {
@@ -504,8 +512,8 @@ func shipLogs(workerId string, conf logShippingConfig) {
 			delim = conf.LogFile.Delim
 		}
 	case "stderr", "stdout":
-		log.Infof("[%s:%s@%s] Calculating size from log data stream.", workerId, conf.LogType, alloc.ID)
 		size := conf.AllocationClient.GetLogSize(conf.LogType, alloc, conf.TaskName, 0)
+		log.Infof("[%s:%s@%s] Calculated size from log data stream. Got %d", workerId, conf.LogType, alloc.ID, size)
 
 		if size < offsetBytes || time.Since(time.Unix(0, alloc.CreateTime)).Seconds() <= allocation.DefaultPollInterval {
 			if size < offsetBytes && time.Since(time.Unix(0, alloc.CreateTime)).Seconds() > allocation.DefaultPollInterval {
@@ -563,17 +571,18 @@ StreamLoop:
 				workerId,
 				conf.LogType,
 				alloc.ID,
-				conf.TaskName,
+				conf.DisplayName,
 			)
 			conf.StopChan <- struct{}{}
 			break StreamLoop
 		case data, ok := <-stream:
 			if !ok {
 				log.Errorf(
-					"[%s:%s@%s] Not ok when reading from stream: Task: %s Type: %s",
-					alloc.ID,
-					conf.TaskName,
+					"[%s:%s@%s] Not ok when reading from stream: Task: %s",
+					workerId,
 					conf.LogType,
+					alloc.ID,
+					conf.DisplayName,
 				)
 
 				triggerCancel(conf.CancelChannels)
@@ -585,17 +594,16 @@ StreamLoop:
 
 			if len(data.FileEvent) > 0 {
 				log.Warnf(
-					"[%s:%s@%s] Resetting offset due to file event: %s Task: %s Type: %s",
+					"[%s:%s@%s] Resetting offset due to file event: %s Task: %s",
 					workerId,
+					conf.LogType,
 					alloc.ID,
 					data.FileEvent,
-					conf.TaskName,
-					conf.LogType,
+					conf.DisplayName,
 				)
 
-				triggerCancel(conf.CancelChannels)
-
-				break StreamLoop
+				bytes = 0
+				offsetBytes = 0
 			} else {
 				bytes = len(data.Data)
 
@@ -681,7 +689,7 @@ StreamLoop:
 				}
 			}
 
-			log.Infof("[%s:%s@%s] Processed bytes: %d", workerId, conf.LogType, alloc.ID, bytes)
+			log.Debugf("[%s:%s@%s] Processed bytes: %d", workerId, conf.LogType, alloc.ID, bytes)
 
 			offsetBytes = offsetBytes + int64(bytes)
 			bytesRead = bytesRead + int64(bytes)
@@ -719,7 +727,7 @@ StreamLoop:
 		}
 	}
 
-	log.Warnf("[%s:%s@%s] Loop finished for Task: %s, Type: %s", workerId, conf.LogType, alloc.ID, conf.TaskName, conf.LogType)
+	log.Warnf("[%s:%s@%s] Loop finished for Task: %s, Type: %s", workerId, conf.LogType, alloc.ID, conf.DisplayName, conf.LogType)
 }
 
 func purgeAllocationData(alloc *nomad.Allocation, kv *consul.KV, consulPath *string) error {
