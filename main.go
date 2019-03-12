@@ -300,8 +300,6 @@ Loop:
 							taskConfig := buildTaskMetaConfig(task.Meta)
 
 							if taskConfig.ErrEnabled {
-								stopStderr := make(chan struct{})
-
 								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
 									SendLogs:         !config.NoSend,
 									LogType:          allocation.StdErr,
@@ -313,7 +311,6 @@ Loop:
 									KVStore:          kv,
 									AllocationClient: &allocationClient,
 									ConsulPath:       &config.ConsulPath,
-									StopChan:         stopStderr,
 									CancelChannels:   filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]),
 									CancelChannel:    channels[task.Name+"_stderr"],
 									Logzio:           l,
@@ -323,8 +320,6 @@ Loop:
 							}
 
 							if taskConfig.OutEnabled {
-								stopStdout := make(chan struct{})
-
 								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
 									SendLogs:         !config.NoSend,
 									LogType:          allocation.StdOut,
@@ -336,7 +331,6 @@ Loop:
 									KVStore:          kv,
 									AllocationClient: &allocationClient,
 									ConsulPath:       &config.ConsulPath,
-									StopChan:         stopStdout,
 									CancelChannels:   filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]),
 									CancelChannel:    channels[task.Name+"_stdout"],
 									Logzio:           l,
@@ -351,7 +345,6 @@ Loop:
 				}
 
 				for i := range conf.LogFiles {
-					stop := make(chan struct{})
 					c := channels["file_"+strconv.Itoa(i)]
 
 					logFileConf := conf.LogFiles[i]
@@ -367,7 +360,6 @@ Loop:
 						KVStore:          kv,
 						AllocationClient: &allocationClient,
 						ConsulPath:       &config.ConsulPath,
-						StopChan:         stop,
 						CancelChannels:   filterCancelChannels(cancelChannels, c),
 						CancelChannel:    c,
 						Logzio:           l,
@@ -396,6 +388,11 @@ Loop:
 
 				log.Warnf("[%s] Finished collection for alloc.", alloc.ID)
 
+				metrics <- Metric{
+					Name: fmt.Sprintf("%slogshipper_allocation_collections_completed", config.StatsdPrefix),
+					Value: 1,
+				}
+
 				cancellationChannel <- alloc
 			}(currentAlloc)
 		}
@@ -407,10 +404,6 @@ Loop:
 func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 	metrics <- Metric{
 		Name: fmt.Sprintf("%slogshipper_workers_started", conf.Config.StatsdPrefix),
-		Value: 1,
-	}
-	metrics <- Metric{
-		Name: fmt.Sprintf("%slogshipper_workers_started_for_allocation_%s", conf.Config.StatsdPrefix, conf.Allocation.ID),
 		Value: 1,
 	}
 	metrics <- Metric{
@@ -557,11 +550,6 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 					Value: 1,
 				}
 
-				metrics <- Metric{
-					Name: fmt.Sprintf("%slogshipper_files_not_found_for_allocation_%s", conf.Config.StatsdPrefix, alloc.ID),
-					Value: 1,
-				}
-
 				alloc, allocErr := conf.AllocationClient.GetAllocationInfo(alloc.ID)
 
 				if allocErr != nil {
@@ -647,17 +635,13 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 					Name: fmt.Sprintf("%slogshipper_worker_offset_errors_for_type_%s", conf.Config.StatsdPrefix, conf.LogType),
 					Value: 1,
 				}
-				metrics <- Metric{
-					Name: fmt.Sprintf("%slogshipper_worker_offset_errors_for_allocation_%s", conf.Config.StatsdPrefix, alloc.ID),
-					Value: 1,
-				}
 			}
 			offsetBytes = int64(0)
 		}
 
 		log.Infof("[%s:%s@%s] Streaming logs for path %s from offset: %d", workerId, conf.LogType, alloc.ID, conf.LogFile.Path, offsetBytes)
 
-		stream, errors = conf.AllocationClient.StreamFile(alloc, conf.LogFile.Path, offsetBytes, conf.StopChan)
+		stream, errors = conf.AllocationClient.StreamFile(alloc, conf.LogFile.Path, offsetBytes, nil)
 
 		if len(conf.LogFile.Type) == 0 {
 			log.Errorf("[%s:%s@%s] Log file type must be set.", workerId, conf.LogType, alloc.ID)
@@ -695,7 +679,7 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 
 		log.Debugf("[%s:%s@%s] Streaming logs from offset: %d", workerId, conf.LogType, alloc.ID, offsetBytes)
 
-		stream, errors = conf.AllocationClient.StreamLog(conf.LogType, alloc, conf.TaskName, offsetBytes, conf.StopChan)
+		stream, errors = conf.AllocationClient.StreamLog(conf.LogType, alloc, conf.TaskName, offsetBytes, nil)
 
 		itemType = "nomad-" + conf.LogType
 
@@ -743,6 +727,10 @@ StreamLoop:
 					Name: fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix),
 					Value: 1,
 				}
+				metrics <- Metric{
+					Name: fmt.Sprintf("%slogshipper_worker_streaming_errors", conf.Config.StatsdPrefix),
+					Value: 1,
+				}
 			}
 
 			triggerCancel(conf.CancelChannels)
@@ -762,11 +750,13 @@ StreamLoop:
 				conf.DisplayName,
 			)
 
-			conf.StopChan <- struct{}{}
-
 			metrics <- Metric{
 				Name: fmt.Sprintf("%slogshipper_worker_warnings", conf.Config.StatsdPrefix),
 				Value: 1,
+			}
+			metrics <- Metric{
+				Name: fmt.Sprintf("%slogshipper_worker_cancellations_received", conf.Config.StatsdPrefix),
+				Value: 2,
 			}
 			break StreamLoop
 		case data, ok := <-stream:
@@ -918,12 +908,6 @@ StreamLoop:
 				Name: fmt.Sprintf("%slogshipper_bytes_processed", conf.Config.StatsdPrefix),
 				Value: bytes,
 			}
-
-			metrics <- Metric{
-				Name: fmt.Sprintf("%slogshipper_bytes_processed_for_allocation_%s", conf.Config.StatsdPrefix, alloc.ID),
-				Value: bytes,
-			}
-
 			metrics <- Metric{
 				Name: fmt.Sprintf("%slogshipper_bytes_processed_for_type_%s", conf.Config.StatsdPrefix, conf.LogType),
 				Value: bytes,
