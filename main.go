@@ -478,6 +478,7 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 	var stream <-chan *nomad.StreamFrame
 	var errors <-chan error
 	var itemType, delim string
+	var streamStop chan struct{}
 
 	switch conf.LogType {
 	case "file":
@@ -558,7 +559,7 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 
 		log.Infof("[%s:%s@%s] Streaming logs for path %s from offset: %d", workerId, conf.LogType, alloc.ID, conf.LogFile.Path, offsetBytes)
 
-		stream, errors = conf.AllocationClient.StreamFile(alloc, conf.LogFile.Path, offsetBytes, nil)
+		stream, errors = conf.AllocationClient.StreamFile(alloc, conf.LogFile.Path, offsetBytes, streamStop)
 
 		if len(conf.LogFile.Type) == 0 {
 			log.Errorf("[%s:%s@%s] Log file type must be set.", workerId, conf.LogType, alloc.ID)
@@ -587,7 +588,7 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 
 		log.Debugf("[%s:%s@%s] Streaming logs from offset: %d", workerId, conf.LogType, alloc.ID, offsetBytes)
 
-		stream, errors = conf.AllocationClient.StreamLog(conf.LogType, alloc, conf.TaskName, offsetBytes, nil)
+		stream, errors = conf.AllocationClient.StreamLog(conf.LogType, alloc, conf.TaskName, offsetBytes, streamStop)
 
 		itemType = "nomad-" + conf.LogType
 
@@ -629,6 +630,13 @@ StreamLoop:
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_streaming_errors", conf.Config.StatsdPrefix), 1)
 			}
 
+			select {
+			case streamStop <- struct{}{}:
+				log.Warningf("[%s:%s@%s] Sent stop to file stream.", workerId, conf.LogType, alloc.ID)
+			default:
+				log.Infof("[%s:%s@%s] Unable to send stop to file stream. May be closed.", workerId, conf.LogType, alloc.ID)
+			}
+
 			triggerCancel(conf.CancelChannels)
 
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
@@ -643,6 +651,13 @@ StreamLoop:
 				conf.DisplayName,
 			)
 
+			select {
+			case streamStop <- struct{}{}:
+				log.Warningf("[%s:%s@%s] Sent stop to file stream.", workerId, conf.LogType, alloc.ID)
+			default:
+				log.Infof("[%s:%s@%s] Unable to send stop to file stream. May be closed.", workerId, conf.LogType, alloc.ID)
+			}
+
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_warnings", conf.Config.StatsdPrefix), 1)
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_received", conf.Config.StatsdPrefix), 1)
 			break StreamLoop
@@ -655,6 +670,13 @@ StreamLoop:
 					alloc.ID,
 					conf.DisplayName,
 				)
+
+				select {
+				case streamStop <- struct{}{}:
+					log.Warningf("[%s:%s@%s] Sent stop to file stream.", workerId, conf.LogType, alloc.ID)
+				default:
+					log.Infof("[%s:%s@%s] Unable to send stop to file stream. May be closed.", workerId, conf.LogType, alloc.ID)
+				}
 
 				triggerCancel(conf.CancelChannels)
 
@@ -696,6 +718,14 @@ StreamLoop:
 
 					if err != nil {
 						log.Errorf("[%s:%s@%s] Error compiling regex: %s", workerId, conf.LogType, alloc.ID, err)
+
+						select {
+						case streamStop <- struct{}{}:
+							log.Warningf("[%s:%s@%s] Sent stop to file stream.", workerId, conf.LogType, alloc.ID)
+						default:
+							log.Infof("[%s:%s@%s] Unable to send stop to file stream. May be closed.", workerId, conf.LogType, alloc.ID)
+						}
+
 						triggerCancel(conf.CancelChannels)
 						incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
 						incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
@@ -738,6 +768,14 @@ StreamLoop:
 
 						if err != nil {
 							log.Errorf("[%s:%s@%s] %s", workerId, conf.LogType, alloc.ID, err)
+
+							select {
+							case streamStop <- struct{}{}:
+								log.Warningf("[%s:%s@%s] Sent stop to file stream.", workerId, conf.LogType, alloc.ID)
+							default:
+								log.Infof("[%s:%s@%s] Unable to send stop to file stream. May be closed.", workerId, conf.LogType, alloc.ID)
+							}
+
 							triggerCancel(conf.CancelChannels)
 							incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
 							incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
@@ -792,6 +830,13 @@ StreamLoop:
 			statsJSON, err := json.Marshal(stats)
 
 			if err != nil {
+				select {
+				case streamStop <- struct{}{}:
+					log.Warningf("[%s:%s@%s] Sent stop to file stream.", workerId, conf.LogType, alloc.ID)
+				default:
+					log.Infof("[%s:%s@%s] Unable to send stop to file stream. May be closed.", workerId, conf.LogType, alloc.ID)
+				}
+
 				triggerCancel(conf.CancelChannels)
 				log.Errorf("[%s:%s@%s] %s", workerId, conf.LogType, alloc.ID, err)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
@@ -804,6 +849,13 @@ StreamLoop:
 			_, err = conf.KVStore.Put(p, nil)
 
 			if err != nil {
+				select {
+				case streamStop <- struct{}{}:
+					log.Warningf("[%s:%s@%s] Sent stop to file stream.", workerId, conf.LogType, alloc.ID)
+				default:
+					log.Infof("[%s:%s@%s] Unable to send stop to file stream. May be closed.", workerId, conf.LogType, alloc.ID)
+				}
+				
 				triggerCancel(conf.CancelChannels)
 				log.Errorf("[%s:%s@%s] Error saving log shipping stats to consul: %s", workerId, conf.LogType, alloc.ID, err)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
