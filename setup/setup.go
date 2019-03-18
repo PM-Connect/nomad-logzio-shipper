@@ -29,6 +29,9 @@ type Config struct {
 	StatsdHost string
 	StatsdPort int
 	StatsdPrefix string
+
+	UI bool
+	UIPort int
 }
 
 func NewConfig() (*Config, error) {
@@ -54,6 +57,8 @@ func NewConfig() (*Config, error) {
 	flags.StringVar(&config.StatsdHost, "statsd-host", "", "The host to connect to for statsd metrics.")
 	flags.IntVar(&config.StatsdPort, "statsd-port", 0, "The port to connect to for statsd metrics.")
 	flags.StringVar(&config.StatsdPrefix, "statsd-prefix", "", "Prefix metrics with the given key.")
+	flags.BoolVar(&config.UI, "ui", false, "Enable the stats/reporting ui.")
+	flags.IntVar(&config.UIPort, "ui-port", 9696, "The port to advertise the ui on.")
 
 	err := flags.Parse(args)
 

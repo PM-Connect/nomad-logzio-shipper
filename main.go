@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"github.com/pm-connect/nomad-logzio-shipper/setup"
 	"github.com/pm-connect/nomad-logzio-shipper/statsd"
+	"net/http"
 	"os"
 	"regexp"
 	"runtime/pprof"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -70,7 +70,7 @@ type logShippingConfig struct {
 	AllocationClient *allocation.Client
 	ConsulPath       *string
 	StopChan         chan struct{}
-	CancelChannels   []chan bool
+	CancelChannels   *[]chan bool
 	CancelChannel    chan bool
 	Logzio           *logzio.LogzioSender
 	LogFile          *logFileConfig
@@ -81,6 +81,8 @@ type Metric struct {
 	Name  string
 	Value int
 }
+
+type MetricStore map[string]int
 
 func main() {
 	config, err := setup.NewConfig()
@@ -167,6 +169,8 @@ func main() {
 
 	var metricHandlers []func(Metric)
 
+	storedMetrics := MetricStore{}
+
 	if len(config.StatsdHost) > 0 && config.StatsdPort > 0 {
 		statsdClient := statsd.New(config.StatsdHost, config.StatsdPort)
 
@@ -175,12 +179,17 @@ func main() {
 		})
 	}
 
-	go metricListener(metrics, metricHandlers)
-
-	metrics <- Metric{
-		Name: "Test",
-		Value: 1,
+	if config.UI {
+		metricHandlers = append(metricHandlers, func(metric Metric) {
+			if existing, ok := storedMetrics[metric.Name]; ok {
+				storedMetrics[metric.Name] = existing + metric.Value
+			} else {
+				storedMetrics[metric.Name] = metric.Value
+			}
+		})
 	}
+
+	go metricListener(metrics, metricHandlers)
 
 	currentAllocationsMutex := &sync.Mutex{}
 
@@ -206,6 +215,16 @@ func main() {
 	go allocationCleanup(client, kv, &config.ConsulPath, &config.MaxAge)
 
 	exit := make(chan string)
+
+	allocCancellationChannels := map[string]*[]chan bool{}
+	allocCancellationChannelsMutex := &sync.Mutex{}
+
+	allocationWorkers := map[string][]string{}
+	allocationWorkersMutex := &sync.Mutex{}
+
+	if config.UI {
+		go runUi(config, &currentAllocations, &storedMetrics, &allocationWorkers)
+	}
 
 Loop:
 	for {
@@ -233,6 +252,17 @@ Loop:
 			currentAllocationsMutex.Lock()
 			currentAllocations = filterAllocationsExclude(currentAllocations, alloc.ID)
 			currentAllocationsMutex.Unlock()
+
+			channels := allocCancellationChannels[alloc.ID]
+
+			allocationWorkersMutex.Lock()
+			if _, ok := allocationWorkers[alloc.ID]; ok {
+				delete(allocationWorkers, alloc.ID)
+			}
+			allocationWorkersMutex.Unlock()
+
+			triggerCancel(channels)
+
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_cancellations", config.StatsdPrefix), 1)
 		case alloc := <-addAllocation:
 			currentAlloc := *alloc
@@ -242,46 +272,27 @@ Loop:
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_received", config.StatsdPrefix), 1)
 
 			go func(alloc nomad.Allocation) {
+				log.Infof("[%s] Starting shipping.", currentAlloc.ID)
+
 				var wg sync.WaitGroup
-
-				var cancelChannels []chan bool
-				channels := map[string]chan bool{}
-
 				var allocGroup *nomad.TaskGroup
+				var loggingConfigurations []logShippingConfig
+				var cancellations []chan bool
 
 			GroupListLoop:
 				for _, group := range alloc.Job.TaskGroups {
 					if *group.Name == alloc.TaskGroup {
 						allocGroup = group
-
-						for _, t := range group.Tasks {
-							taskConfig := buildTaskMetaConfig(t.Meta)
-							if taskConfig.ErrEnabled {
-								cancelStderr := make(chan bool)
-								cancelChannels = append(cancelChannels, cancelStderr)
-								channels[t.Name+"_stderr"] = cancelStderr
-							}
-
-							if taskConfig.OutEnabled {
-								cancelStdout := make(chan bool)
-								cancelChannels = append(cancelChannels, cancelStdout)
-								channels[t.Name+"_stdout"] = cancelStdout
-							}
-						}
-
 						break GroupListLoop
 					}
 				}
 
-				conf := buildMetaConfig(allocGroup.Meta)
-
-				for i := range conf.LogFiles {
-					c := make(chan bool)
-					cancelChannels = append(cancelChannels, c)
-					channels["file_"+strconv.Itoa(i)] = c
+				if allocGroup == nil {
+					log.Errorf("[%s] Unable to find group for allocation.", alloc.ID)
+					incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_errors", config.StatsdPrefix), 1)
 				}
 
-				var loggingConfigurations []logShippingConfig
+				conf := buildMetaConfig(allocGroup.Meta)
 
 			GroupShipLoop:
 				for _, group := range alloc.Job.TaskGroups {
@@ -290,19 +301,23 @@ Loop:
 							taskConfig := buildTaskMetaConfig(task.Meta)
 
 							if taskConfig.ErrEnabled {
+								cancel := make(chan bool)
+
+								cancellations = append(cancellations, cancel)
+
 								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
 									SendLogs:         !config.NoSend,
 									LogType:          allocation.StdErr,
 									TaskConf:         &taskConfig,
 									WaitGroup:        &wg,
 									Allocation:       alloc,
-									DisplayName:      fmt.Sprintf("%s/%s", *group.Name, task.Name),
+									DisplayName:      fmt.Sprintf("%s/%s/%s", *alloc.Job.Name, *group.Name, task.Name),
 									TaskName:         task.Name,
 									KVStore:          kv,
 									AllocationClient: &allocationClient,
 									ConsulPath:       &config.ConsulPath,
-									CancelChannels:   filterCancelChannels(cancelChannels, channels[task.Name+"_stderr"]),
-									CancelChannel:    channels[task.Name+"_stderr"],
+									CancelChannels:   &cancellations,
+									CancelChannel:    cancel,
 									Logzio:           l,
 									LogFile:          nil,
 									Config:           config,
@@ -310,19 +325,23 @@ Loop:
 							}
 
 							if taskConfig.OutEnabled {
+								cancel := make(chan bool)
+
+								cancellations = append(cancellations, cancel)
+
 								loggingConfigurations = append(loggingConfigurations, logShippingConfig{
 									SendLogs:         !config.NoSend,
 									LogType:          allocation.StdOut,
 									TaskConf:         &taskConfig,
 									WaitGroup:        &wg,
 									Allocation:       alloc,
-									DisplayName:      fmt.Sprintf("%s/%s", *group.Name, task.Name),
+									DisplayName:      fmt.Sprintf("%s/%s/%s", *alloc.Job.Name, *group.Name, task.Name),
 									TaskName:         task.Name,
 									KVStore:          kv,
 									AllocationClient: &allocationClient,
 									ConsulPath:       &config.ConsulPath,
-									CancelChannels:   filterCancelChannels(cancelChannels, channels[task.Name+"_stdout"]),
-									CancelChannel:    channels[task.Name+"_stdout"],
+									CancelChannels:   &cancellations,
+									CancelChannel:    cancel,
 									Logzio:           l,
 									LogFile:          nil,
 									Config:           config,
@@ -335,7 +354,9 @@ Loop:
 				}
 
 				for i := range conf.LogFiles {
-					c := channels["file_"+strconv.Itoa(i)]
+					cancel := make(chan bool)
+
+					cancellations = append(cancellations, cancel)
 
 					logFileConf := conf.LogFiles[i]
 
@@ -345,13 +366,13 @@ Loop:
 						TaskConf:         nil,
 						WaitGroup:        &wg,
 						Allocation:       alloc,
-						DisplayName:      fmt.Sprintf("%s/%s", alloc.Name, "leader"),
+						DisplayName:      fmt.Sprintf("%s/%s/leader", *alloc.Job.Name, alloc.Name),
 						TaskName:         "leader",
 						KVStore:          kv,
 						AllocationClient: &allocationClient,
 						ConsulPath:       &config.ConsulPath,
-						CancelChannels:   filterCancelChannels(cancelChannels, c),
-						CancelChannel:    c,
+						CancelChannels:   &cancellations,
+						CancelChannel:    cancel,
 						Logzio:           l,
 						LogFile:          &logFileConf,
 						Config:           config,
@@ -372,7 +393,21 @@ Loop:
 						defer wg.Done()
 						shipLogs(id, config, metrics)
 					}(config)
+
+					allocationWorkersMutex.Lock()
+					filePath := ""
+
+					if config.LogFile != nil {
+						filePath = config.LogFile.Path
+					}
+
+					allocationWorkers[alloc.ID] = append(allocationWorkers[alloc.ID], fmt.Sprintf("%s %s %s %s", id, config.DisplayName, config.LogType, filePath))
+					allocationWorkersMutex.Unlock()
 				}
+
+				allocCancellationChannelsMutex.Lock()
+				allocCancellationChannels[alloc.ID] = &cancellations
+				allocCancellationChannelsMutex.Unlock()
 
 				log.Infof("[%s] Waiting on WaitGroup for alloc.", alloc.ID)
 
@@ -390,6 +425,42 @@ Loop:
 	}
 }
 
+func runUi(config *setup.Config, currentAllocations *[]*nomad.Allocation, metrics *MetricStore, workers *map[string][]string) {
+	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		allWorkers := *workers
+
+		_, _ = writer.Write([]byte(fmt.Sprintf("Nomad Node: %s\n", config.NomadClientID)))
+		_, _ = writer.Write([]byte(fmt.Sprintf("Shipper Alloc: %s\n", config.SelfAlloc)))
+
+		_, _ = writer.Write([]byte("\n"))
+
+		_, _ = writer.Write([]byte("Watching Allocations:\n"))
+		for _, alloc := range *currentAllocations {
+			_, _ = writer.Write([]byte(alloc.ID + " " + *alloc.Job.Name + "\n"))
+
+			if allocWorkers, ok := allWorkers[alloc.ID]; ok {
+				for _, name := range allocWorkers {
+					_, _ = writer.Write([]byte("    " + name + "\n"))
+				}
+			}
+
+			_, _ = writer.Write([]byte("\n"))
+		}
+
+		_, _ = writer.Write([]byte("\n"))
+		_, _ = writer.Write([]byte("\n"))
+
+		_, _ = writer.Write([]byte("Metrics:\n"))
+		for metric, value := range *metrics {
+			_, _ = writer.Write([]byte(fmt.Sprintf("%s %d\n", metric, value)))
+		}
+	})
+
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", config.UIPort), nil); err != nil {
+		log.Fatal(err)
+	}
+}
+
 func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 	incrementMetric(metrics, fmt.Sprintf("%slogshipper_workers_started", conf.Config.StatsdPrefix), 1)
 	incrementMetric(metrics, fmt.Sprintf("%slogshipper_workers_started_for_type_%s", conf.Config.StatsdPrefix, conf.LogType), 1)
@@ -403,14 +474,16 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 		triggerCancel(conf.CancelChannels)
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), 1)
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+		incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_errors", conf.Config.StatsdPrefix), 1)
 		return
 	}
 
 	if alloc.ClientStatus != "running" {
 		log.Errorf("[%s:%s@%s] Allocation not running", workerId, conf.LogType, alloc.ID)
 		triggerCancel(conf.CancelChannels)
-		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+		incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_errors", conf.Config.StatsdPrefix), 1)
 		return
 	}
 
@@ -448,7 +521,7 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 	if err != nil {
 		log.Errorf("[%s:%s@%s] Error fetching consul log shipping stats: %s", workerId, conf.LogType, alloc.ID, err)
 		triggerCancel(conf.CancelChannels)
-		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 		return
 	}
@@ -463,7 +536,7 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 		if err != nil {
 			log.Errorf("[%s:%s@%s] Error converting consul data to struct: %s", workerId, conf.LogType, alloc.ID, err)
 			triggerCancel(conf.CancelChannels)
-			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 			return
 		}
@@ -485,7 +558,7 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 		if conf.LogFile == nil {
 			log.Errorf("[%s:%s@%s] Attempted to log file with nil logFileConfig.", alloc.ID)
 			triggerCancel(conf.CancelChannels)
-			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 			return
 		}
@@ -506,7 +579,7 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 				if allocErr != nil {
 					log.Errorf("[%s:%s@%s] Unable to find alloc: %s", workerId, conf.LogType, alloc.ID, allocErr)
 					triggerCancel(conf.CancelChannels)
-					incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+					incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 					incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 					return
 				}
@@ -514,7 +587,7 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 				if alloc.ClientStatus != "running" {
 					log.Warningf("[%s:%s@%s] Allocation is %s", workerId, conf.LogType, alloc.ID, alloc.ClientStatus)
 					triggerCancel(conf.CancelChannels)
-					incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+					incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 					incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_warnings", conf.Config.StatsdPrefix), 1)
 					return
 				}
@@ -539,7 +612,7 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 			} else {
 				log.Errorf("[%s:%s@%s] Error calculating file size: %s", workerId, conf.LogType, alloc.ID, err)
 				triggerCancel(conf.CancelChannels)
-				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 				return
 			}
@@ -564,7 +637,7 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 		if len(conf.LogFile.Type) == 0 {
 			log.Errorf("[%s:%s@%s] Log file type must be set.", workerId, conf.LogType, alloc.ID)
 			triggerCancel(conf.CancelChannels)
-			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 			return
 		}
@@ -639,7 +712,7 @@ StreamLoop:
 
 			triggerCancel(conf.CancelChannels)
 
-			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 
 			break StreamLoop
 		case <-conf.CancelChannel:
@@ -680,7 +753,7 @@ StreamLoop:
 
 				triggerCancel(conf.CancelChannels)
 
-				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 
 				break StreamLoop
@@ -727,7 +800,7 @@ StreamLoop:
 						}
 
 						triggerCancel(conf.CancelChannels)
-						incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+						incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 						incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 						break
 					}
@@ -777,7 +850,7 @@ StreamLoop:
 							}
 
 							triggerCancel(conf.CancelChannels)
-							incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+							incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 							incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 							break
 						}
@@ -814,6 +887,8 @@ StreamLoop:
 
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_processed", conf.Config.StatsdPrefix), bytes)
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_processed_for_type_%s", conf.Config.StatsdPrefix, conf.LogType), bytes)
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_processed_worker_%s", conf.Config.StatsdPrefix, workerId), bytes)
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_processed_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), bytes)
 
 			if offsetBytes > bytesRead {
 				log.Warnf("[%s:%s@%s] Detected offset greater than total bytes read, offset %d, bytes read %d.", workerId, conf.LogType, alloc.ID, offsetBytes, bytesRead)
@@ -839,7 +914,7 @@ StreamLoop:
 
 				triggerCancel(conf.CancelChannels)
 				log.Errorf("[%s:%s@%s] %s", workerId, conf.LogType, alloc.ID, err)
-				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 				break
 			}
@@ -855,10 +930,10 @@ StreamLoop:
 				default:
 					log.Infof("[%s:%s@%s] Unable to send stop to file stream. May be closed.", workerId, conf.LogType, alloc.ID)
 				}
-				
+
 				triggerCancel(conf.CancelChannels)
 				log.Errorf("[%s:%s@%s] Error saving log shipping stats to consul: %s", workerId, conf.LogType, alloc.ID, err)
-				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(conf.CancelChannels))
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 				break
 			}
@@ -998,22 +1073,13 @@ func buildMetaConfig(meta map[string]string) metaConfig {
 	return config
 }
 
-func triggerCancel(channels []chan bool) {
-	for _, c := range channels {
-		c <- true
-	}
-}
+func triggerCancel(channels *[]chan bool) {
+	for _, c := range *channels {
+		select {
+		case c <- true:
 
-func filterCancelChannels(channels []chan bool, channel chan bool) []chan bool {
-	var filtered []chan bool
-
-	for _, c := range channels {
-		if channel != c {
-			filtered = append(filtered, c)
 		}
 	}
-
-	return filtered
 }
 
 func filterAllocationsExclude(vs []*nomad.Allocation, id string) []*nomad.Allocation {
