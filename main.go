@@ -249,6 +249,8 @@ Loop:
 
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_removals", config.StatsdPrefix), 1)
 		case alloc := <-cancellationChannel:
+			log.Infof("[%s] Received cancel for allocation.", alloc.ID)
+
 			currentAllocationsMutex.Lock()
 			currentAllocations = filterAllocationsExclude(currentAllocations, alloc.ID)
 			currentAllocationsMutex.Unlock()
@@ -270,6 +272,7 @@ Loop:
 			log.Infof("[%s] Starting for allocation.", currentAlloc.ID)
 
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_received", config.StatsdPrefix), 1)
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_received_for_alloc_%s", config.StatsdPrefix, alloc.ID), 1)
 
 			go func(alloc nomad.Allocation) {
 				log.Infof("[%s] Starting shipping.", currentAlloc.ID)
@@ -413,7 +416,17 @@ Loop:
 
 				wg.Wait()
 
-				log.Warnf("[%s] Finished collection for alloc.", alloc.ID)
+				a, _ := allocationClient.GetAllocationInfo(alloc.ID)
+
+				expectedRestart := false
+
+				if a != nil && (a.ClientStatus == "running" || a.ClientStatus == "restarting") {
+					expectedRestart = true
+					incrementMetric(metrics, fmt.Sprintf("%slogshipper_expected_restarts", config.StatsdPrefix), 1)
+					incrementMetric(metrics, fmt.Sprintf("%slogshipper_expected_restarts_for_alloc_%s", config.StatsdPrefix, alloc.ID), 1)
+				}
+
+				log.Warnf("[%s] Finished collection for alloc. Expected Restart: %t", alloc.ID, expectedRestart)
 
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_collections_completed", config.StatsdPrefix), 1)
 
@@ -698,7 +711,14 @@ StreamLoop:
 				log.Warningf("[%s:%s@%s] Unable to find file: %s", workerId, conf.LogType, alloc.ID, err)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_warnings", conf.Config.StatsdPrefix), 1)
 			} else {
-				log.Errorf("[%s:%s@%s] Error while streaming: %s", workerId, conf.LogType, alloc.ID, err)
+				alloc, _ := conf.AllocationClient.GetAllocationInfo(conf.Allocation.ID)
+
+				if alloc != nil {
+					log.Errorf("[%s:%s@%s] Error while streaming: %s, Alloc State: %s", workerId, conf.LogType, alloc.ID, err, alloc.DeploymentStatus)
+				} else {
+					log.Errorf("[%s:%s@%s] Error while streaming: %s", workerId, conf.LogType, alloc.ID, err)
+				}
+
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_streaming_errors", conf.Config.StatsdPrefix), 1)
 			}
@@ -716,12 +736,21 @@ StreamLoop:
 
 			break StreamLoop
 		case <-conf.CancelChannel:
+			alloc, _ := conf.AllocationClient.GetAllocationInfo(conf.Allocation.ID)
+
+			expectedRestart := false
+
+			if alloc != nil && (alloc.ClientStatus == "running" || alloc.ClientStatus == "restarting") {
+				expectedRestart = true
+			}
+
 			log.Warnf(
-				"[%s:%s@%s] Received cancel for Task: %s",
+				"[%s:%s@%s] Received cancel for Task: %s, Expected Restart: %t",
 				workerId,
 				conf.LogType,
 				alloc.ID,
 				conf.DisplayName,
+				expectedRestart,
 			)
 
 			select {
