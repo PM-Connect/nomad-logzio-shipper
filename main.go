@@ -179,12 +179,35 @@ func main() {
 		})
 	}
 
+	timedMetrics := map[int64]MetricStore{}
+	var secondsSaved []int64
+
 	if config.UI {
 		metricHandlers = append(metricHandlers, func(metric Metric) {
 			if existing, ok := storedMetrics[metric.Name]; ok {
 				storedMetrics[metric.Name] = existing + metric.Value
 			} else {
 				storedMetrics[metric.Name] = metric.Value
+			}
+
+			timestamp := time.Now().Unix()
+
+			if len(secondsSaved) > 43200 {
+				var stamp int64
+				stamp, secondsSaved = secondsSaved[len(secondsSaved)-1], secondsSaved[:len(secondsSaved)-1]
+
+				delete(timedMetrics, stamp)
+			}
+
+			if _, ok := timedMetrics[timestamp]; !ok {
+				secondsSaved = append(secondsSaved, timestamp)
+				timedMetrics[timestamp] = MetricStore{}
+			}
+
+			if existing, ok := timedMetrics[timestamp][metric.Name]; ok {
+				timedMetrics[timestamp][metric.Name] = metric.Value + existing
+			} else {
+				timedMetrics[timestamp][metric.Name] = metric.Value
 			}
 		})
 	}
@@ -223,7 +246,7 @@ func main() {
 	allocationWorkersMutex := &sync.Mutex{}
 
 	if config.UI {
-		go runUi(config, &currentAllocations, &storedMetrics, &allocationWorkers)
+		go runUi(config, &currentAllocations, &storedMetrics, &allocationWorkers, &timedMetrics)
 	}
 
 Loop:
@@ -438,7 +461,7 @@ Loop:
 	}
 }
 
-func runUi(config *setup.Config, currentAllocations *[]*nomad.Allocation, metrics *MetricStore, workers *map[string][]string) {
+func runUi(config *setup.Config, currentAllocations *[]*nomad.Allocation, metrics *MetricStore, workers *map[string][]string, timedMetrics *map[int64]MetricStore) {
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		allWorkers := *workers
 
@@ -458,6 +481,22 @@ func runUi(config *setup.Config, currentAllocations *[]*nomad.Allocation, metric
 			}
 
 			_, _ = writer.Write([]byte("\n"))
+		}
+
+		_, _ = writer.Write([]byte("\n"))
+		_, _ = writer.Write([]byte("\n"))
+
+		_, _ = writer.Write([]byte("Metrics Averages Over 12 Hours:\n"))
+		for metric := range *metrics {
+			sum := 0
+
+			for _, items := range *timedMetrics {
+				if value, ok := items[metric]; ok {
+					sum = sum + value
+				}
+			}
+
+			_, _ = writer.Write([]byte(fmt.Sprintf("%s %d\n", metric, sum / len(*timedMetrics))))
 		}
 
 		_, _ = writer.Write([]byte("\n"))
@@ -896,6 +935,10 @@ StreamLoop:
 							} else {
 								sentBytes = sentBytes + int64(len(item.Message))
 								sentMessages = sentMessages + 1
+								incrementMetric(metrics, fmt.Sprintf("%slogshipper_logs_shipped", conf.Config.StatsdPrefix), 1)
+								incrementMetric(metrics, fmt.Sprintf("%slogshipper_logs_shipped_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+								incrementMetric(metrics, fmt.Sprintf("%slogshipper_logs_shipped_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
+								incrementMetric(metrics, fmt.Sprintf("%slogshipper_logs_shipped_for_type_%s", conf.Config.StatsdPrefix, conf.LogType), 1)
 							}
 						} else {
 							sentBytes = sentBytes + int64(len(item.Message))
