@@ -38,14 +38,14 @@ func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]nomad.All
 		errChan <- err
 	} else {
 		for _, allocation := range allocations {
-			logger.Debugf("[%s] Allocation found.", allocation.ID)
+			logger.Infof("[%s] Allocation found.", allocation.ID)
 
 			if allocation.ClientStatus == "running" || allocation.ClientStatus == "restarting" {
 				foundAllocations = append(foundAllocations, *allocation)
 
 				mutex.Lock()
 				if !allocationInSlice(*allocation, *currentAllocations) {
-					logger.Debugf("[%s] Allocation sent to added channel.", allocation.ID)
+					logger.Infof("[%s] Allocation sent to added channel.", allocation.ID)
 					addedChan <- *allocation
 				}
 				mutex.Unlock()
@@ -56,7 +56,7 @@ func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]nomad.All
 		if len(*currentAllocations) > 0 {
 			for _, allocation := range *currentAllocations {
 				if !allocationInSlice(allocation, foundAllocations) {
-					logger.Debugf("[%s] Allocation sent to remove channel.", allocation.ID)
+					logger.Infof("[%s] Allocation sent to remove channel.", allocation.ID)
 					removedChan <- allocation
 				}
 			}
