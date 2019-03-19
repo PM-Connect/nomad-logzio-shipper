@@ -38,7 +38,7 @@ func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]nomad.All
 		errChan <- err
 	} else {
 		for _, allocation := range allocations {
-			logger.Infof("[%s] Allocation found.", allocation.ID)
+			logger.Infof("[%s] Allocation found. State: %s", allocation.ID, allocation.ClientStatus)
 
 			if allocation.ClientStatus == "running" || allocation.ClientStatus == "restarting" {
 				foundAllocations = append(foundAllocations, *allocation)
