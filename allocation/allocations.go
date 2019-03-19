@@ -7,6 +7,7 @@ import (
 
 	nomad "github.com/hashicorp/nomad/api"
 	"github.com/pm-connect/nomad-logzio-shipper/utils"
+	"github.com/sirupsen/logrus"
 )
 
 type Client struct {
@@ -18,8 +19,8 @@ const DefaultPollInterval = 10
 const StdErr = "stderr"
 const StdOut = "stdout"
 
-func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]*nomad.Allocation,
-	addedChan chan<- *nomad.Allocation, removedChan chan<- *nomad.Allocation, errChan chan<- error, mutex *sync.Mutex, pollInterval int) {
+func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]nomad.Allocation,
+	addedChan chan<- nomad.Allocation, removedChan chan<- nomad.Allocation, errChan chan<- error, mutex *sync.Mutex, pollInterval int, logger *logrus.Logger) {
 	mutex.Lock()
 	if len(*currentAllocations) > 0 {
 		mutex.Unlock()
@@ -31,18 +32,21 @@ func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]*nomad.Al
 
 	allocations, err := a.GetAllocationsForNode(nodeID)
 
-	var foundAllocations []*nomad.Allocation
+	var foundAllocations []nomad.Allocation
 
 	if err != nil {
 		errChan <- err
 	} else {
 		for _, allocation := range allocations {
+			logger.Debugf("[%s] Allocation found.", allocation.ID)
+
 			if allocation.ClientStatus == "running" || allocation.ClientStatus == "restarting" {
-				foundAllocations = append(foundAllocations, allocation)
+				foundAllocations = append(foundAllocations, *allocation)
 
 				mutex.Lock()
-				if !allocationInSlice(allocation, *currentAllocations) {
-					addedChan <- allocation
+				if !allocationInSlice(*allocation, *currentAllocations) {
+					logger.Debugf("[%s] Allocation sent to added channel.", allocation.ID)
+					addedChan <- *allocation
 				}
 				mutex.Unlock()
 			}
@@ -52,6 +56,7 @@ func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]*nomad.Al
 		if len(*currentAllocations) > 0 {
 			for _, allocation := range *currentAllocations {
 				if !allocationInSlice(allocation, foundAllocations) {
+					logger.Debugf("[%s] Allocation sent to remove channel.", allocation.ID)
 					removedChan <- allocation
 				}
 			}
@@ -61,7 +66,7 @@ func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]*nomad.Al
 		mutex.Unlock()
 	}
 
-	a.SyncAllocations(nodeID, currentAllocations, addedChan, removedChan, errChan, mutex, pollInterval)
+	a.SyncAllocations(nodeID, currentAllocations, addedChan, removedChan, errChan, mutex, pollInterval, logger)
 }
 
 func (a *Client) GetAllocationsForNode(nodeID *string) ([]*nomad.Allocation, error) {
@@ -70,7 +75,7 @@ func (a *Client) GetAllocationsForNode(nodeID *string) ([]*nomad.Allocation, err
 	return allocations, err
 }
 
-func allocationInSlice(item *nomad.Allocation, list []*nomad.Allocation) bool {
+func allocationInSlice(item nomad.Allocation, list []nomad.Allocation) bool {
 	for _, i := range list {
 		if i.ID == item.ID {
 			return true

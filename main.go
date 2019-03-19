@@ -87,16 +87,21 @@ type MetricStore map[string]int
 func main() {
 	config, err := setup.NewConfig()
 
+	logger := log.New()
+
 	if err != nil {
 		log.Panic(err)
 	}
 
 	if config.Debug {
 		log.SetLevel(log.DebugLevel)
+		logger.SetLevel(log.DebugLevel)
 	} else if config.Verbose {
 		log.SetLevel(log.InfoLevel)
+		logger.SetLevel(log.InfoLevel)
 	} else {
 		log.SetLevel(log.WarnLevel)
+		logger.SetLevel(log.WarnLevel)
 	}
 
 	if config.Profile {
@@ -216,9 +221,9 @@ func main() {
 
 	currentAllocationsMutex := &sync.Mutex{}
 
-	var currentAllocations []*nomad.Allocation
-	addAllocation := make(chan *nomad.Allocation)
-	removeAllocation := make(chan *nomad.Allocation)
+	var currentAllocations []nomad.Allocation
+	addAllocation := make(chan nomad.Allocation)
+	removeAllocation := make(chan nomad.Allocation)
 	allocationSyncErrors := make(chan error)
 	cancellationChannel := make(chan nomad.Allocation)
 
@@ -234,6 +239,7 @@ func main() {
 		allocationSyncErrors,
 		currentAllocationsMutex,
 		allocation.DefaultPollInterval,
+		logger,
 	)
 	go allocationCleanup(client, kv, &config.ConsulPath, &config.MaxAge)
 
@@ -260,9 +266,9 @@ Loop:
 			log.Errorf("Error syncing allocations: %s", err)
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_sync_errors", config.StatsdPrefix), 1)
 		case alloc := <-removeAllocation:
-			cancellationChannel <- *alloc
+			cancellationChannel <- alloc
 
-			err := purgeAllocationData(alloc, kv, &config.ConsulPath)
+			err := purgeAllocationData(&alloc, kv, &config.ConsulPath)
 
 			if err != nil {
 				log.Error(err)
@@ -290,7 +296,7 @@ Loop:
 
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_cancellations", config.StatsdPrefix), 1)
 		case alloc := <-addAllocation:
-			currentAlloc := *alloc
+			currentAlloc := alloc
 
 			log.Infof("[%s] Starting for allocation.", currentAlloc.ID)
 
@@ -461,7 +467,7 @@ Loop:
 	}
 }
 
-func runUi(config *setup.Config, currentAllocations *[]*nomad.Allocation, metrics *MetricStore, workers *map[string][]string, timedMetrics *map[int64]MetricStore) {
+func runUi(config *setup.Config, currentAllocations *[]nomad.Allocation, metrics *MetricStore, workers *map[string][]string, timedMetrics *map[int64]MetricStore) {
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		allWorkers := *workers
 
@@ -1154,8 +1160,8 @@ func triggerCancel(channels *[]chan bool) {
 	}
 }
 
-func filterAllocationsExclude(vs []*nomad.Allocation, id string) []*nomad.Allocation {
-	vsf := make([]*nomad.Allocation, 0)
+func filterAllocationsExclude(vs []nomad.Allocation, id string) []nomad.Allocation {
+	vsf := make([]nomad.Allocation, 0)
 
 	for _, v := range vs {
 		if v.ID != id {
