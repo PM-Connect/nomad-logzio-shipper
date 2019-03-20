@@ -937,7 +937,7 @@ StreamLoop:
 							err = conf.Logzio.Send(msg)
 
 							if err != nil {
-								log.Error(err)
+								log.Errorf("[%s:%s@%s] Error sending to logz.io: %s", workerId, conf.LogType, alloc.ID, err)
 							} else {
 								sentBytes = sentBytes + int64(len(item.Message))
 								sentMessages = sentMessages + 1
