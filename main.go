@@ -532,7 +532,8 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 		triggerCancel(conf.CancelChannels)
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), 1)
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
-		incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_errors", conf.Config.StatsdPrefix), 1)
+		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 		return
 	}
 
@@ -541,7 +542,8 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 		triggerCancel(conf.CancelChannels)
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
-		incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_errors", conf.Config.StatsdPrefix), 1)
+		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 		return
 	}
 
@@ -581,6 +583,8 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 		triggerCancel(conf.CancelChannels)
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 		return
 	}
 
@@ -596,6 +600,8 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 			triggerCancel(conf.CancelChannels)
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 			return
 		}
 
@@ -618,6 +624,8 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 			triggerCancel(conf.CancelChannels)
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 			return
 		}
 
@@ -639,6 +647,8 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 					triggerCancel(conf.CancelChannels)
 					incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 					incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+					incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+					incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 					return
 				}
 
@@ -672,6 +682,8 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 				triggerCancel(conf.CancelChannels)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 				return
 			}
 		}
@@ -697,6 +709,8 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 			triggerCancel(conf.CancelChannels)
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 			return
 		}
 
@@ -745,6 +759,8 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 	default:
 		log.Errorf("[%s:%s@%s] Invalid log type provided.", alloc.ID)
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 		return
 	}
 
@@ -765,7 +781,11 @@ StreamLoop:
 				}
 
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_streaming_errors", conf.Config.StatsdPrefix), 1)
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_streaming_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_streaming_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 			}
 
 			select {
@@ -829,6 +849,8 @@ StreamLoop:
 
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 
 				break StreamLoop
 			}
@@ -876,6 +898,8 @@ StreamLoop:
 						triggerCancel(conf.CancelChannels)
 						incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 						incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+						incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+						incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 						break
 					}
 
@@ -926,6 +950,8 @@ StreamLoop:
 							triggerCancel(conf.CancelChannels)
 							incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 							incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+							incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+							incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 							break
 						}
 
@@ -938,6 +964,9 @@ StreamLoop:
 
 							if err != nil {
 								log.Errorf("[%s:%s@%s] Error sending to logz.io: %s", workerId, conf.LogType, alloc.ID, err)
+								incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+								incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+								incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 							} else {
 								sentBytes = sentBytes + int64(len(item.Message))
 								sentMessages = sentMessages + 1
@@ -945,10 +974,22 @@ StreamLoop:
 								incrementMetric(metrics, fmt.Sprintf("%slogshipper_logs_shipped_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
 								incrementMetric(metrics, fmt.Sprintf("%slogshipper_logs_shipped_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 								incrementMetric(metrics, fmt.Sprintf("%slogshipper_logs_shipped_for_type_%s", conf.Config.StatsdPrefix, conf.LogType), 1)
+								incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_sent", conf.Config.StatsdPrefix), len(item.Message))
+								incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_sent_for_type_%s", conf.Config.StatsdPrefix, conf.LogType), len(item.Message))
+								incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_sent_worker_%s", conf.Config.StatsdPrefix, workerId), len(item.Message))
+								incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_sent_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), len(item.Message))
 							}
 						} else {
 							sentBytes = sentBytes + int64(len(item.Message))
 							sentMessages = sentMessages + 1
+							incrementMetric(metrics, fmt.Sprintf("%slogshipper_logs_shipped", conf.Config.StatsdPrefix), 1)
+							incrementMetric(metrics, fmt.Sprintf("%slogshipper_logs_shipped_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+							incrementMetric(metrics, fmt.Sprintf("%slogshipper_logs_shipped_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
+							incrementMetric(metrics, fmt.Sprintf("%slogshipper_logs_shipped_for_type_%s", conf.Config.StatsdPrefix, conf.LogType), 1)
+							incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_sent", conf.Config.StatsdPrefix), len(item.Message))
+							incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_sent_for_type_%s", conf.Config.StatsdPrefix, conf.LogType), len(item.Message))
+							incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_sent_worker_%s", conf.Config.StatsdPrefix, workerId), len(item.Message))
+							incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_sent_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), len(item.Message))
 						}
 					}
 
@@ -994,6 +1035,8 @@ StreamLoop:
 				log.Errorf("[%s:%s@%s] %s", workerId, conf.LogType, alloc.ID, err)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 				break
 			}
 
@@ -1013,6 +1056,8 @@ StreamLoop:
 				log.Errorf("[%s:%s@%s] Error saving log shipping stats to consul: %s", workerId, conf.LogType, alloc.ID, err)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
+				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 				break
 			}
 
