@@ -21,12 +21,9 @@ const StdOut = "stdout"
 
 func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]nomad.Allocation,
 	addedChan chan<- nomad.Allocation, removedChan chan<- nomad.Allocation, errChan chan<- error, mutex *sync.Mutex, pollInterval int, logger *logrus.Logger) {
-	mutex.Lock()
 	if len(*currentAllocations) > 0 {
-		mutex.Unlock()
 		utils.WaitUntil(time.Second * time.Duration(pollInterval))
 	} else {
-		mutex.Unlock()
 		time.Sleep(time.Second * 1)
 	}
 
@@ -52,16 +49,18 @@ func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]nomad.All
 			}
 		}
 
-		mutex.Lock()
 		if len(*currentAllocations) > 0 {
 			for _, allocation := range *currentAllocations {
+				mutex.Lock()
 				if !allocationInSlice(allocation, foundAllocations) {
 					logger.Infof("[%s] Allocation sent to remove channel.", allocation.ID)
 					removedChan <- allocation
 				}
+				mutex.Unlock()
 			}
 		}
 
+		mutex.Lock()
 		*currentAllocations = foundAllocations
 		mutex.Unlock()
 	}

@@ -304,7 +304,13 @@ Loop:
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_received_for_alloc_%s", config.StatsdPrefix, alloc.ID), 1)
 
 			go func(alloc nomad.Allocation) {
-				log.Infof("[%s] Starting shipping.", currentAlloc.ID)
+				defer func() {
+					if err := recover(); err != nil {
+						log.Fatalf("[%s] Critical Error: %s", err)
+					}
+				}()
+
+				log.Infof("[%s] Starting shipping.", alloc.ID)
 
 				var wg sync.WaitGroup
 				var allocGroup *nomad.TaskGroup
@@ -422,7 +428,15 @@ Loop:
 					config := loggingConfiguration
 					log.Infof("[%s:%s@%s] Starting task", id, config.LogType, alloc.ID)
 					go func(conf logShippingConfig) {
-						defer wg.Done()
+						defer func() {
+							defer wg.Done()
+
+							if err := recover(); err != nil {
+								log.Errorf("[%s] Critical Error: %s", err)
+								triggerCancel(conf.CancelChannels)
+							}
+						}()
+
 						shipLogs(id, config, metrics)
 					}(config)
 
