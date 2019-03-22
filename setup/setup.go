@@ -66,7 +66,7 @@ func NewConfig() (*Config, error) {
 		return nil, err
 	}
 
-	args = flags.Args()
+	flags.Args()
 
 	if envToken := os.Getenv("LOGZIO_TOKEN"); config.LogzIOToken == "" && envToken != "" {
 		config.LogzIOToken = envToken

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	nomad "github.com/hashicorp/nomad/api"
-	"github.com/pm-connect/nomad-logzio-shipper/utils"
 	"github.com/sirupsen/logrus"
 )
 
@@ -21,58 +20,55 @@ const StdOut = "stdout"
 
 func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]nomad.Allocation,
 	addedChan chan<- nomad.Allocation, removedChan chan<- nomad.Allocation, errChan chan<- error, mutex *sync.Mutex, pollInterval int, logger *logrus.Logger) {
-	currentAllocs := *currentAllocations
 
-	if len(currentAllocs) > 0 {
-		utils.WaitUntil(time.Second * time.Duration(pollInterval))
-	} else {
-		time.Sleep(time.Second * 1)
-	}
+	ticker := time.NewTicker(time.Second * time.Duration(pollInterval))
 
-	var currentAllocIds []string
+	for {
+		<- ticker.C
 
-	for _, alloc := range currentAllocs {
-		currentAllocIds = append(currentAllocIds, alloc.ID)
-	}
+		currentAllocs := *currentAllocations
 
-	logger.Infof("Current Allocations: %v", currentAllocIds)
+		var currentAllocIds []string
 
-	allocations, err := a.GetAllocationsForNode(nodeID)
-
-	var foundAllocations []nomad.Allocation
-
-	if err != nil {
-		errChan <- err
-	} else {
-		for _, allocation := range allocations {
-			logger.Infof("[%s] Allocation found. State: %s", allocation.ID, allocation.ClientStatus)
-
-			if allocation.ClientStatus == "running" || allocation.ClientStatus == "restarting" {
-				foundAllocations = append(foundAllocations, *allocation)
-
-				if !allocationInSlice(*allocation, currentAllocs) {
-					logger.Infof("[%s] Allocation sent to added channel.", allocation.ID)
-					addedChan <- *allocation
-				}
-			}
+		for _, alloc := range currentAllocs {
+			currentAllocIds = append(currentAllocIds, alloc.ID)
 		}
 
-		if len(currentAllocs) > 0 {
-			for _, allocation := range currentAllocs {
-				if !allocationInSlice(allocation, foundAllocations) {
-					logger.Infof("[%s] Allocation sent to remove channel.", allocation.ID)
-					removedChan <- allocation
+		logger.Infof("Current Allocations: %v", currentAllocIds)
+
+		allocations, err := a.GetAllocationsForNode(nodeID)
+
+		var foundAllocations []nomad.Allocation
+
+		if err != nil {
+			errChan <- err
+		} else {
+			for _, allocation := range allocations {
+				if allocation.ClientStatus == "running" || allocation.ClientStatus == "restarting" {
+					foundAllocations = append(foundAllocations, *allocation)
+
+					if !allocationInSlice(*allocation, currentAllocs) {
+						logger.Infof("[%s] Allocation sent to added channel.", allocation.ID)
+						addedChan <- *allocation
+					}
 				}
-
 			}
+
+			if len(currentAllocs) > 0 {
+				for _, allocation := range currentAllocs {
+					if !allocationInSlice(allocation, foundAllocations) {
+						logger.Infof("[%s] Allocation sent to remove channel.", allocation.ID)
+						removedChan <- allocation
+					}
+
+				}
+			}
+
+			mutex.Lock()
+			*currentAllocations = foundAllocations
+			mutex.Unlock()
 		}
-
-		mutex.Lock()
-		*currentAllocations = foundAllocations
-		mutex.Unlock()
 	}
-
-	a.SyncAllocations(nodeID, currentAllocations, addedChan, removedChan, errChan, mutex, pollInterval, logger)
 }
 
 func (a *Client) GetAllocationsForNode(nodeID *string) ([]*nomad.Allocation, error) {

@@ -171,8 +171,8 @@ func (client *StatsdClient) Send(data map[string]string, sampleRate float32) {
 	}
 
 	for k, v := range sampledData {
-		update_string := fmt.Sprintf("%s:%s", k, v)
-		_, err := fmt.Fprintf(client.conn, update_string)
+		updateString := fmt.Sprintf("%s:%s", k, v)
+		_, err := fmt.Fprint(client.conn, updateString)
 		if err != nil {
 			log.Println(err)
 		}

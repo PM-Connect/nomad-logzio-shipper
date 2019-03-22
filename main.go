@@ -287,9 +287,7 @@ Loop:
 			channels := allocCancellationChannels[alloc.ID]
 
 			allocationWorkersMutex.Lock()
-			if _, ok := allocationWorkers[alloc.ID]; ok {
-				delete(allocationWorkers, alloc.ID)
-			}
+			delete(allocationWorkers, alloc.ID)
 			allocationWorkersMutex.Unlock()
 
 			triggerCancel(channels)
@@ -306,7 +304,7 @@ Loop:
 			go func(alloc nomad.Allocation) {
 				defer func() {
 					if err := recover(); err != nil {
-						log.Fatalf("[%s] Critical Error: %s", err)
+						log.Fatalf("[%s] Critical Error: %s", alloc.ID, err)
 					}
 				}()
 
@@ -432,7 +430,7 @@ Loop:
 							defer wg.Done()
 
 							if err := recover(); err != nil {
-								log.Errorf("[%s] Critical Error: %s", err)
+								log.Errorf("[%s] Critical Error: %s", alloc.ID, err)
 								triggerCancel(conf.CancelChannels)
 							}
 						}()
@@ -634,7 +632,7 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 	switch conf.LogType {
 	case "file":
 		if conf.LogFile == nil {
-			log.Errorf("[%s:%s@%s] Attempted to log file with nil logFileConfig.", alloc.ID)
+			log.Errorf("[%s:%s@%s] Attempted to log file with nil logFileConfig.", workerId, conf.LogType, alloc.ID)
 			triggerCancel(conf.CancelChannels)
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
@@ -771,7 +769,7 @@ func shipLogs(workerId string, conf logShippingConfig, metrics chan<- Metric) {
 			}
 		}
 	default:
-		log.Errorf("[%s:%s@%s] Invalid log type provided.", alloc.ID)
+		log.Errorf("[%s:%s@%s] Invalid log type provided.", workerId, conf.LogType, alloc.ID)
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
 		incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
@@ -789,7 +787,7 @@ StreamLoop:
 				alloc, _ := conf.AllocationClient.GetAllocationInfo(conf.Allocation.ID)
 
 				if alloc != nil {
-					log.Errorf("[%s:%s@%s] Error while streaming: %s, Alloc State: %s", workerId, conf.LogType, alloc.ID, err, alloc.DeploymentStatus)
+					log.Errorf("[%s:%s@%s] Error while streaming: %s, Alloc State: %s", workerId, conf.LogType, alloc.ID, err, alloc.ClientStatus)
 				} else {
 					log.Errorf("[%s:%s@%s] Error while streaming: %s", workerId, conf.LogType, alloc.ID, err)
 				}
@@ -1214,7 +1212,7 @@ func triggerCancel(channels *[]chan bool) {
 	for _, c := range *channels {
 		select {
 		case c <- true:
-
+		default:
 		}
 	}
 }
@@ -1240,11 +1238,10 @@ func incrementMetric(channel chan<- Metric, name string, value int) {
 
 func metricListener(channel <-chan Metric, handlers []func(Metric)) {
 	for {
-		select {
-		case metric := <-channel:
-			for _, handler := range handlers {
-				handler(metric)
-			}
+		metric := <-channel
+
+		for _, handler := range handlers {
+			handler(metric)
 		}
 	}
 }
