@@ -273,10 +273,6 @@ func main() {
 
 			triggerCancel(channels)
 
-			allocCancellationChannelsMutex.Lock()
-			delete(allocCancellationChannels, alloc.ID)
-			allocCancellationChannelsMutex.Unlock()
-
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_cancellations", config.StatsdPrefix), 1)
 		}
 	}()
@@ -302,6 +298,10 @@ Loop:
 			if err != nil {
 				log.Error(err)
 			}
+
+			allocCancellationChannelsMutex.Lock()
+			delete(allocCancellationChannels, alloc.ID)
+			allocCancellationChannelsMutex.Unlock()
 
 			log.Infof("[%s] Removed allocation.", alloc.ID)
 
