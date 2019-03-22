@@ -271,7 +271,16 @@ func main() {
 			delete(allocationWorkers, alloc.ID)
 			allocationWorkersMutex.Unlock()
 
-			triggerCancel(channels)
+			allocCancellationChannelsMutex.Lock()
+			if len(*channels) > 0 {
+				for _, c := range *channels {
+					select {
+					case c <- true:
+					default:
+					}
+				}
+			}
+			allocCancellationChannelsMutex.Unlock()
 
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_cancellations", config.StatsdPrefix), 1)
 		}
