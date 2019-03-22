@@ -21,11 +21,21 @@ const StdOut = "stdout"
 
 func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]nomad.Allocation,
 	addedChan chan<- nomad.Allocation, removedChan chan<- nomad.Allocation, errChan chan<- error, mutex *sync.Mutex, pollInterval int, logger *logrus.Logger) {
-	if len(*currentAllocations) > 0 {
+	currentAllocs := *currentAllocations
+
+	if len(currentAllocs) > 0 {
 		utils.WaitUntil(time.Second * time.Duration(pollInterval))
 	} else {
 		time.Sleep(time.Second * 1)
 	}
+
+	var currentAllocIds []string
+
+	for _, alloc := range currentAllocs {
+		currentAllocIds = append(currentAllocIds, alloc.ID)
+	}
+
+	logger.Infof("Current Allocations: %v", currentAllocIds)
 
 	allocations, err := a.GetAllocationsForNode(nodeID)
 
@@ -40,23 +50,20 @@ func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]nomad.All
 			if allocation.ClientStatus == "running" || allocation.ClientStatus == "restarting" {
 				foundAllocations = append(foundAllocations, *allocation)
 
-				mutex.Lock()
-				if !allocationInSlice(*allocation, *currentAllocations) {
+				if !allocationInSlice(*allocation, currentAllocs) {
 					logger.Infof("[%s] Allocation sent to added channel.", allocation.ID)
 					addedChan <- *allocation
 				}
-				mutex.Unlock()
 			}
 		}
 
-		if len(*currentAllocations) > 0 {
-			for _, allocation := range *currentAllocations {
-				mutex.Lock()
+		if len(currentAllocs) > 0 {
+			for _, allocation := range currentAllocs {
 				if !allocationInSlice(allocation, foundAllocations) {
 					logger.Infof("[%s] Allocation sent to remove channel.", allocation.ID)
 					removedChan <- allocation
 				}
-				mutex.Unlock()
+
 			}
 		}
 
