@@ -48,8 +48,9 @@ func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]nomad.All
 					foundAllocations = append(foundAllocations, *allocation)
 
 					if !allocationInSlice(*allocation, currentAllocs) {
-						logger.Infof("[%s] Allocation sent to added channel.", allocation.ID)
+						logger.Infof("[%s] Sending allocation to added channel.", allocation.ID)
 						addedChan <- *allocation
+						logger.Infof("[%s] Allocation sent to added channel.", allocation.ID)
 					}
 				}
 			}
@@ -57,10 +58,10 @@ func (a *Client) SyncAllocations(nodeID *string, currentAllocations *[]nomad.All
 			if len(currentAllocs) > 0 {
 				for _, allocation := range currentAllocs {
 					if !allocationInSlice(allocation, foundAllocations) {
-						logger.Infof("[%s] Allocation sent to remove channel.", allocation.ID)
+						logger.Infof("[%s] Sending allocation to remove channel.", allocation.ID)
 						removedChan <- allocation
+						logger.Infof("[%s] Allocation sent to remove channel.", allocation.ID)
 					}
-
 				}
 			}
 

@@ -255,29 +255,10 @@ func main() {
 		go runUi(config, &currentAllocations, &storedMetrics, &allocationWorkers, &timedMetrics)
 	}
 
-Loop:
-	for {
-		select {
-		case reason := <-exit:
-			log.Errorf("Exiting: %s", reason)
-			incrementMetric(metrics, fmt.Sprintf("%slogshipper_exits", config.StatsdPrefix), 1)
-			break Loop
-		case err := <-allocationSyncErrors:
-			log.Errorf("Error syncing allocations: %s", err)
-			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_sync_errors", config.StatsdPrefix), 1)
-		case alloc := <-removeAllocation:
-			cancellationChannel <- alloc
+	go func() {
+		for {
+			alloc := <-cancellationChannel
 
-			err := purgeAllocationData(&alloc, kv, &config.ConsulPath)
-
-			if err != nil {
-				log.Error(err)
-			}
-
-			log.Infof("[%s] Removed allocation.", alloc.ID)
-
-			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_removals", config.StatsdPrefix), 1)
-		case alloc := <-cancellationChannel:
 			log.Infof("[%s] Received cancel for allocation.", alloc.ID)
 
 			currentAllocationsMutex.Lock()
@@ -292,7 +273,39 @@ Loop:
 
 			triggerCancel(channels)
 
+			allocCancellationChannelsMutex.Lock()
+			delete(allocCancellationChannels, alloc.ID)
+			allocCancellationChannelsMutex.Unlock()
+
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_cancellations", config.StatsdPrefix), 1)
+		}
+	}()
+
+Loop:
+	for {
+		select {
+		case reason := <-exit:
+			log.Errorf("Exiting: %s", reason)
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_exits", config.StatsdPrefix), 1)
+			break Loop
+		case err := <-allocationSyncErrors:
+			log.Errorf("Error syncing allocations: %s", err)
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_sync_errors", config.StatsdPrefix), 1)
+		case alloc := <-removeAllocation:
+			log.Infof("[%s] Received allocation removal request.", alloc.ID)
+
+			cancellationChannel <- alloc
+
+			log.Infof("[%s] Purging stored allocation data.", alloc.ID)
+			err := purgeAllocationData(&alloc, kv, &config.ConsulPath)
+
+			if err != nil {
+				log.Error(err)
+			}
+
+			log.Infof("[%s] Removed allocation.", alloc.ID)
+
+			incrementMetric(metrics, fmt.Sprintf("%slogshipper_allocation_removals", config.StatsdPrefix), 1)
 		case alloc := <-addAllocation:
 			currentAlloc := alloc
 
