@@ -174,6 +174,7 @@ func main() {
 
 	var metricHandlers []func(Metric)
 
+	storedMetricsMutex := &sync.Mutex{}
 	storedMetrics := MetricStore{}
 
 	if len(config.StatsdHost) > 0 && config.StatsdPort > 0 {
@@ -185,15 +186,18 @@ func main() {
 	}
 
 	timedMetrics := map[int64]MetricStore{}
+	timedMetricsMutex := &sync.Mutex{}
 	var secondsSaved []int64
 
 	if config.UI {
 		metricHandlers = append(metricHandlers, func(metric Metric) {
+			storedMetricsMutex.Lock()
 			if existing, ok := storedMetrics[metric.Name]; ok {
 				storedMetrics[metric.Name] = existing + metric.Value
 			} else {
 				storedMetrics[metric.Name] = metric.Value
 			}
+			storedMetricsMutex.Unlock()
 
 			timestamp := time.Now().Unix()
 
@@ -203,6 +207,8 @@ func main() {
 
 				delete(timedMetrics, stamp)
 			}
+
+			timedMetricsMutex.Lock()
 
 			if _, ok := timedMetrics[timestamp]; !ok {
 				secondsSaved = append(secondsSaved, timestamp)
@@ -214,6 +220,8 @@ func main() {
 			} else {
 				timedMetrics[timestamp][metric.Name] = metric.Value
 			}
+
+			timedMetricsMutex.Unlock()
 		})
 	}
 
@@ -252,7 +260,7 @@ func main() {
 	allocationWorkersMutex := &sync.Mutex{}
 
 	if config.UI {
-		go runUi(config, &currentAllocations, &storedMetrics, &allocationWorkers, &timedMetrics, currentAllocationsMutex, allocationWorkersMutex)
+		go runUi(config, &currentAllocations, &storedMetrics, &allocationWorkers, &timedMetrics, currentAllocationsMutex, allocationWorkersMutex, timedMetricsMutex, storedMetricsMutex)
 	}
 
 	go func() {
@@ -520,7 +528,7 @@ Loop:
 	}
 }
 
-func runUi(config *setup.Config, currentAllocations *[]nomad.Allocation, metrics *MetricStore, workers *map[string][]string, timedMetrics *map[int64]MetricStore, currentAllocsMutex *sync.Mutex, workersMutex *sync.Mutex) {
+func runUi(config *setup.Config, currentAllocations *[]nomad.Allocation, metrics *MetricStore, workers *map[string][]string, timedMetrics *map[int64]MetricStore, currentAllocsMutex *sync.Mutex, workersMutex *sync.Mutex, timedMutex *sync.Mutex, metricMutex *sync.Mutex) {
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		workersMutex.Lock()
 		allWorkers := *workers
@@ -553,6 +561,8 @@ func runUi(config *setup.Config, currentAllocations *[]nomad.Allocation, metrics
 		_, _ = writer.Write([]byte("\n"))
 
 		_, _ = writer.Write([]byte("Metrics Averages Over 12 Hours:\n"))
+		metricMutex.Lock()
+		timedMutex.Lock()
 		allMetrics := *metrics
 		allTimedMetrics := *timedMetrics
 		for metric := range allMetrics {
@@ -567,13 +577,18 @@ func runUi(config *setup.Config, currentAllocations *[]nomad.Allocation, metrics
 			_, _ = writer.Write([]byte(fmt.Sprintf("%s %d\n", metric, sum / len(allTimedMetrics))))
 		}
 
+		metricMutex.Unlock()
+		timedMutex.Unlock()
+
 		_, _ = writer.Write([]byte("\n"))
 		_, _ = writer.Write([]byte("\n"))
 
 		_, _ = writer.Write([]byte("Metrics:\n"))
+		metricMutex.Lock()
 		for metric, value := range allMetrics {
 			_, _ = writer.Write([]byte(fmt.Sprintf("%s %d\n", metric, value)))
 		}
+		metricMutex.Unlock()
 	})
 
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", config.UIPort), nil); err != nil {
