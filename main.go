@@ -252,7 +252,7 @@ func main() {
 	allocationWorkersMutex := &sync.Mutex{}
 
 	if config.UI {
-		go runUi(config, &currentAllocations, &storedMetrics, &allocationWorkers, &timedMetrics)
+		go runUi(config, &currentAllocations, &storedMetrics, &allocationWorkers, &timedMetrics, currentAllocationsMutex, allocationWorkersMutex)
 	}
 
 	go func() {
@@ -272,7 +272,7 @@ func main() {
 			allocationWorkersMutex.Unlock()
 
 			allocCancellationChannelsMutex.Lock()
-			if len(*channels) > 0 {
+			if channels != nil && len(*channels) > 0 {
 				for _, c := range *channels {
 					select {
 					case c <- true:
@@ -299,7 +299,26 @@ Loop:
 		case alloc := <-removeAllocation:
 			log.Infof("[%s] Received allocation removal request.", alloc.ID)
 
-			cancellationChannel <- alloc
+			currentAllocationsMutex.Lock()
+			currentAllocations = filterAllocationsExclude(currentAllocations, alloc.ID)
+			currentAllocationsMutex.Unlock()
+
+			channels := allocCancellationChannels[alloc.ID]
+
+			allocationWorkersMutex.Lock()
+			delete(allocationWorkers, alloc.ID)
+			allocationWorkersMutex.Unlock()
+
+			allocCancellationChannelsMutex.Lock()
+			if channels != nil && len(*channels) > 0 {
+				for _, c := range *channels {
+					select {
+					case c <- true:
+					default:
+					}
+				}
+			}
+			allocCancellationChannelsMutex.Unlock()
 
 			log.Infof("[%s] Purging stored allocation data.", alloc.ID)
 			err := purgeAllocationData(&alloc, kv, &config.ConsulPath)
@@ -501,9 +520,11 @@ Loop:
 	}
 }
 
-func runUi(config *setup.Config, currentAllocations *[]nomad.Allocation, metrics *MetricStore, workers *map[string][]string, timedMetrics *map[int64]MetricStore) {
+func runUi(config *setup.Config, currentAllocations *[]nomad.Allocation, metrics *MetricStore, workers *map[string][]string, timedMetrics *map[int64]MetricStore, currentAllocsMutex *sync.Mutex, workersMutex *sync.Mutex) {
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		workersMutex.Lock()
 		allWorkers := *workers
+		workersMutex.Unlock()
 
 		_, _ = writer.Write([]byte(fmt.Sprintf("Nomad Node: %s\n", config.NomadClientID)))
 		_, _ = writer.Write([]byte(fmt.Sprintf("Shipper Alloc: %s\n", config.SelfAlloc)))
@@ -511,7 +532,12 @@ func runUi(config *setup.Config, currentAllocations *[]nomad.Allocation, metrics
 		_, _ = writer.Write([]byte("\n"))
 
 		_, _ = writer.Write([]byte("Watching Allocations:\n"))
-		for _, alloc := range *currentAllocations {
+
+		currentAllocsMutex.Lock()
+		allocs := *currentAllocations
+		currentAllocsMutex.Unlock()
+
+		for _, alloc := range allocs {
 			_, _ = writer.Write([]byte(alloc.ID + " " + *alloc.Job.Name + "\n"))
 
 			if allocWorkers, ok := allWorkers[alloc.ID]; ok {
@@ -527,23 +553,25 @@ func runUi(config *setup.Config, currentAllocations *[]nomad.Allocation, metrics
 		_, _ = writer.Write([]byte("\n"))
 
 		_, _ = writer.Write([]byte("Metrics Averages Over 12 Hours:\n"))
-		for metric := range *metrics {
+		allMetrics := *metrics
+		allTimedMetrics := *timedMetrics
+		for metric := range allMetrics {
 			sum := 0
 
-			for _, items := range *timedMetrics {
+			for _, items := range allTimedMetrics {
 				if value, ok := items[metric]; ok {
 					sum = sum + value
 				}
 			}
 
-			_, _ = writer.Write([]byte(fmt.Sprintf("%s %d\n", metric, sum / len(*timedMetrics))))
+			_, _ = writer.Write([]byte(fmt.Sprintf("%s %d\n", metric, sum / len(allTimedMetrics))))
 		}
 
 		_, _ = writer.Write([]byte("\n"))
 		_, _ = writer.Write([]byte("\n"))
 
 		_, _ = writer.Write([]byte("Metrics:\n"))
-		for metric, value := range *metrics {
+		for metric, value := range allMetrics {
 			_, _ = writer.Write([]byte(fmt.Sprintf("%s %d\n", metric, value)))
 		}
 	})
