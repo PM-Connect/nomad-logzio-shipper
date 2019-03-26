@@ -187,7 +187,6 @@ func main() {
 
 	timedMetrics := map[int64]MetricStore{}
 	timedMetricsMutex := &sync.Mutex{}
-	var secondsSaved []int64
 
 	if config.UI {
 		metricHandlers = append(metricHandlers, func(metric Metric) {
@@ -201,17 +200,17 @@ func main() {
 
 			timestamp := time.Now().Unix()
 
-			if len(secondsSaved) > 43200 {
-				var stamp int64
-				stamp, secondsSaved = secondsSaved[len(secondsSaved)-1], secondsSaved[:len(secondsSaved)-1]
+			for i := range timedMetrics {
+				t := time.Unix(i, 0)
 
-				delete(timedMetrics, stamp)
+				if time.Since(t).Seconds() > 3600 {
+					delete(timedMetrics, i)
+				}
 			}
 
 			timedMetricsMutex.Lock()
 
 			if _, ok := timedMetrics[timestamp]; !ok {
-				secondsSaved = append(secondsSaved, timestamp)
 				timedMetrics[timestamp] = MetricStore{}
 			}
 
