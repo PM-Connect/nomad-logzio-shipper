@@ -866,13 +866,6 @@ StreamLoop:
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_streaming_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
 			}
 
-			select {
-			case streamStop <- struct{}{}:
-				log.Warningf("[%s:%s@%s] Sent stop to file stream.", workerId, conf.LogType, alloc.ID)
-			default:
-				log.Infof("[%s:%s@%s] Unable to send stop to file stream. May be closed.", workerId, conf.LogType, alloc.ID)
-			}
-
 			triggerCancel(conf.CancelChannels)
 
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
@@ -931,10 +924,10 @@ StreamLoop:
 					conf.DisplayName,
 				)
 
-				bytes = 0
-				offsetBytes = 0
-
+				triggerCancel(conf.CancelChannels)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_warnings", conf.Config.StatsdPrefix), 1)
+
+				break StreamLoop
 			} else {
 				bytes = len(data.Data)
 
@@ -957,7 +950,7 @@ StreamLoop:
 						incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 						incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
 						incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
-						break
+						break StreamLoop
 					}
 
 					for _, line := range strings.Split(value, "\n") {
@@ -1002,7 +995,7 @@ StreamLoop:
 							incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 							incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
 							incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
-							break
+							break StreamLoop
 						}
 
 						if alloc.ID != conf.Config.SelfAlloc && len(conf.Config.SelfAlloc) > 0 {
@@ -1051,7 +1044,7 @@ StreamLoop:
 
 			log.Debugf("[%s:%s@%s] Processed bytes: %d", workerId, conf.LogType, alloc.ID, bytes)
 
-			offsetBytes = offsetBytes + int64(bytes)
+			offsetBytes = offsetBytes + data.Offset
 			bytesRead = bytesRead + int64(bytes)
 
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_processed", conf.Config.StatsdPrefix), bytes)
@@ -1074,20 +1067,13 @@ StreamLoop:
 			statsJSON, err := json.Marshal(stats)
 
 			if err != nil {
-				select {
-				case streamStop <- struct{}{}:
-					log.Warningf("[%s:%s@%s] Sent stop to file stream.", workerId, conf.LogType, alloc.ID)
-				default:
-					log.Infof("[%s:%s@%s] Unable to send stop to file stream. May be closed.", workerId, conf.LogType, alloc.ID)
-				}
-
 				triggerCancel(conf.CancelChannels)
 				log.Errorf("[%s:%s@%s] %s", workerId, conf.LogType, alloc.ID, err)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_cancellations_sent", conf.Config.StatsdPrefix), len(*conf.CancelChannels))
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
-				break
+				break StreamLoop
 			}
 
 			p := &consul.KVPair{Key: fmt.Sprintf("%s/%s", *conf.ConsulPath, consulStatsKey), Value: []byte(statsJSON)}
@@ -1101,7 +1087,7 @@ StreamLoop:
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors", conf.Config.StatsdPrefix), 1)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_worker_%s", conf.Config.StatsdPrefix, workerId), 1)
 				incrementMetric(metrics, fmt.Sprintf("%slogshipper_worker_errors_for_alloc_%s", conf.Config.StatsdPrefix, alloc.ID), 1)
-				break
+				break StreamLoop
 			}
 
 			pair = p
