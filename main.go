@@ -1044,7 +1044,7 @@ StreamLoop:
 
 			log.Debugf("[%s:%s@%s] Processed bytes: %d", workerId, conf.LogType, alloc.ID, bytes)
 
-			offsetBytes = offsetBytes + data.Offset
+			offsetBytes = data.Offset
 			bytesRead = bytesRead + int64(bytes)
 
 			incrementMetric(metrics, fmt.Sprintf("%slogshipper_bytes_processed", conf.Config.StatsdPrefix), bytes)
