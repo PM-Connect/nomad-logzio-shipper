@@ -382,7 +382,7 @@ Loop:
 				for _, group := range alloc.Job.TaskGroups {
 					if *group.Name == alloc.TaskGroup {
 						for _, task := range group.Tasks {
-							taskConfig := buildTaskMetaConfig(task.Meta)
+							taskConfig := buildTaskMetaConfig(task.Meta, conf)
 
 							if taskConfig.ErrEnabled {
 								cancel := make(chan bool)
@@ -1147,7 +1147,7 @@ func allocationCleanup(nomadClient *nomad.Client, kv *consul.KV, consulPath *str
 	allocationCleanup(nomadClient, kv, consulPath, maxAge)
 }
 
-func buildTaskMetaConfig(meta map[string]string) taskMetaConfig {
+func buildTaskMetaConfig(meta map[string]string, metaConf metaConfig) taskMetaConfig {
 	config := taskMetaConfig{}
 
 	if value, ok := meta["logzio_stderr_type"]; ok {
@@ -1161,7 +1161,7 @@ func buildTaskMetaConfig(meta map[string]string) taskMetaConfig {
 	if value, ok := meta["logzio_stderr_enabled"]; ok && value == "false" {
 		config.ErrEnabled = false
 	} else {
-		config.ErrEnabled = true
+		config.ErrEnabled = metaConf.Enabled
 	}
 
 	if value, ok := meta["logzio_stdout_type"]; ok {
@@ -1175,7 +1175,7 @@ func buildTaskMetaConfig(meta map[string]string) taskMetaConfig {
 	if value, ok := meta["logzio_stdout_enabled"]; ok && value == "false" {
 		config.OutEnabled = false
 	} else {
-		config.OutEnabled = true
+		config.OutEnabled = metaConf.Enabled
 	}
 
 	return config
